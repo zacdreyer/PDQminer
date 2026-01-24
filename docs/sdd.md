@@ -2197,4 +2197,34 @@ int32_t PdqMdnsInit(void)
 
 ---
 
+## 12. Implementation Status
+
+### 12.1 Completed Components
+
+| Component | File | Status | Notes |
+|-----------|------|--------|-------|
+| SHA256 Engine | `src/core/sha256_engine.c` | **Complete** | 64-round unrolled, midstate optimization, IRAM placement |
+| Mining Task | `src/core/mining_task.c` | **Complete** | Dual-core FreeRTOS tasks, atomic counters, proper nonce splitting |
+| Board HAL | `src/hal/board_hal.c` | **Complete** | WDT, temp, heap, chip ID using ESP-IDF APIs |
+| Benchmark Firmware | `src/main_benchmark.cpp` | **Complete** | Single/dual-core hashrate measurement |
+| Main Entry Point | `src/main.cpp` | **Complete** | Full initialization sequence |
+| Build System | `platformio.ini` | **Complete** | CYD boards, headless, debug, benchmark environments |
+
+### 12.2 Stub Components (Awaiting Implementation)
+
+| Component | File | Phase |
+|-----------|------|-------|
+| Stratum Client | `src/stratum/stratum_client.c` | Phase B |
+| WiFi Manager | `src/network/wifi_manager.c` | Phase B |
+| Config Manager | `src/config/config_manager.c` | Phase B |
+| Display Driver | `src/display/display_driver.c` | Phase C |
+| Device API | `src/api/device_api.c` | Phase D |
+
+### 12.3 Verified Builds
+
+- `esp32_headless` - Compiles successfully
+- `benchmark` - Compiles successfully
+
+---
+
 *This document is a living specification and will be updated as the design evolves.*

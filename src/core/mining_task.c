@@ -1,0 +1,251 @@
+/**
+ * @file mining_task.c
+ * @brief Dual-core mining task implementation
+ * @copyright Copyright (c) 2025 PDQminer Contributors
+ * @license GPL-3.0
+ */
+
+#include "mining_task.h"
+#include "sha256_engine.h"
+#include <string.h>
+
+#ifdef ESP_PLATFORM
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "esp_task_wdt.h"
+#define PDQ_IRAM_ATTR IRAM_ATTR
+#else
+#define PDQ_IRAM_ATTR
+#endif
+
+#define PDQ_MINING_STACK_SIZE   4096
+#define PDQ_MINING_PRIORITY     5
+#define PDQ_NONCE_BATCH_SIZE    4096
+#define PDQ_WDT_FEED_INTERVAL   1000
+
+typedef struct {
+    volatile bool           Running;
+    volatile bool           HasJob;
+    volatile uint64_t       TotalHashes;
+    volatile uint32_t       HashRate;
+    volatile uint32_t       SharesAccepted;
+    volatile uint32_t       SharesRejected;
+    volatile uint32_t       BlocksFound;
+    uint32_t                StartTime;
+    PdqMiningJob_t          CurrentJob;
+#ifdef ESP_PLATFORM
+    TaskHandle_t            TaskHandle[2];
+    SemaphoreHandle_t       JobMutex;
+#endif
+} MiningState_t;
+
+static MiningState_t s_State = {0};
+
+#ifdef ESP_PLATFORM
+PDQ_IRAM_ATTR static void MiningTaskCore0(void* p_Param) {
+    esp_task_wdt_add(NULL);
+    uint32_t LastWdtFeed = 0;
+    uint32_t LocalHashes = 0;
+    uint32_t LastHashReport = 0;
+
+    while (s_State.Running) {
+        if (!s_State.HasJob) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
+        xSemaphoreTake(s_State.JobMutex, portMAX_DELAY);
+        PdqMiningJob_t Job = s_State.CurrentJob;
+        Job.NonceStart = 0x00000000;
+        Job.NonceEnd = 0x7FFFFFFF;
+        xSemaphoreGive(s_State.JobMutex);
+
+        for (uint32_t Base = Job.NonceStart; Base <= Job.NonceEnd && s_State.Running && s_State.HasJob; Base += PDQ_NONCE_BATCH_SIZE) {
+            PdqMiningJob_t BatchJob = Job;
+            BatchJob.NonceStart = Base;
+            BatchJob.NonceEnd = Base + PDQ_NONCE_BATCH_SIZE - 1;
+            if (BatchJob.NonceEnd > Job.NonceEnd) BatchJob.NonceEnd = Job.NonceEnd;
+
+            uint32_t Nonce;
+            bool Found;
+            PdqSha256MineBlock(&BatchJob, &Nonce, &Found);
+
+            LocalHashes += (BatchJob.NonceEnd - BatchJob.NonceStart + 1);
+
+            if (Found) {
+                __atomic_fetch_add(&s_State.BlocksFound, 1, __ATOMIC_RELAXED);
+            }
+
+            uint32_t Now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+            if (Now - LastWdtFeed > PDQ_WDT_FEED_INTERVAL) {
+                esp_task_wdt_reset();
+                LastWdtFeed = Now;
+            }
+
+            if (Now - LastHashReport > 1000) {
+                __atomic_fetch_add(&s_State.TotalHashes, LocalHashes, __ATOMIC_RELAXED);
+                LocalHashes = 0;
+                LastHashReport = Now;
+            }
+        }
+    }
+
+    esp_task_wdt_delete(NULL);
+    vTaskDelete(NULL);
+}
+
+PDQ_IRAM_ATTR static void MiningTaskCore1(void* p_Param) {
+    esp_task_wdt_add(NULL);
+    uint32_t LastWdtFeed = 0;
+    uint32_t LocalHashes = 0;
+    uint32_t LastHashReport = 0;
+
+    while (s_State.Running) {
+        if (!s_State.HasJob) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
+        xSemaphoreTake(s_State.JobMutex, portMAX_DELAY);
+        PdqMiningJob_t Job = s_State.CurrentJob;
+        Job.NonceStart = 0x80000000;
+        Job.NonceEnd = 0xFFFFFFFF;
+        xSemaphoreGive(s_State.JobMutex);
+
+        for (uint32_t Base = Job.NonceStart; Base <= Job.NonceEnd && s_State.Running && s_State.HasJob; Base += PDQ_NONCE_BATCH_SIZE) {
+            PdqMiningJob_t BatchJob = Job;
+            BatchJob.NonceStart = Base;
+            BatchJob.NonceEnd = Base + PDQ_NONCE_BATCH_SIZE - 1;
+            if (BatchJob.NonceEnd > Job.NonceEnd || BatchJob.NonceEnd < Base) BatchJob.NonceEnd = Job.NonceEnd;
+
+            uint32_t Nonce;
+            bool Found;
+            PdqSha256MineBlock(&BatchJob, &Nonce, &Found);
+
+            LocalHashes += (BatchJob.NonceEnd - BatchJob.NonceStart + 1);
+
+            if (Found) {
+                __atomic_fetch_add(&s_State.BlocksFound, 1, __ATOMIC_RELAXED);
+            }
+
+            uint32_t Now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+            if (Now - LastWdtFeed > PDQ_WDT_FEED_INTERVAL) {
+                esp_task_wdt_reset();
+                LastWdtFeed = Now;
+            }
+
+            if (Now - LastHashReport > 1000) {
+                __atomic_fetch_add(&s_State.TotalHashes, LocalHashes, __ATOMIC_RELAXED);
+                LocalHashes = 0;
+                LastHashReport = Now;
+            }
+        }
+    }
+
+    esp_task_wdt_delete(NULL);
+    vTaskDelete(NULL);
+}
+#endif
+
+PdqError_t PdqMiningInit(void) {
+    memset(&s_State, 0, sizeof(s_State));
+#ifdef ESP_PLATFORM
+    s_State.JobMutex = xSemaphoreCreateMutex();
+    if (s_State.JobMutex == NULL) return PdqErrorNoMemory;
+#endif
+    return PdqOk;
+}
+
+PdqError_t PdqMiningStart(void) {
+    if (s_State.Running) return PdqOk;
+
+    s_State.Running = true;
+    s_State.StartTime = 0;
+
+#ifdef ESP_PLATFORM
+    s_State.StartTime = xTaskGetTickCount() * portTICK_PERIOD_MS;
+
+    xTaskCreatePinnedToCore(
+        MiningTaskCore0,
+        "MineCore0",
+        PDQ_MINING_STACK_SIZE,
+        NULL,
+        PDQ_MINING_PRIORITY,
+        &s_State.TaskHandle[0],
+        0
+    );
+
+    xTaskCreatePinnedToCore(
+        MiningTaskCore1,
+        "MineCore1",
+        PDQ_MINING_STACK_SIZE,
+        NULL,
+        PDQ_MINING_PRIORITY,
+        &s_State.TaskHandle[1],
+        1
+    );
+#endif
+
+    return PdqOk;
+}
+
+PdqError_t PdqMiningStop(void) {
+    s_State.Running = false;
+#ifdef ESP_PLATFORM
+    vTaskDelay(pdMS_TO_TICKS(100));
+#endif
+    return PdqOk;
+}
+
+PdqError_t PdqMiningSetJob(const PdqMiningJob_t* p_Job) {
+    if (p_Job == NULL) return PdqErrorInvalidParam;
+
+#ifdef ESP_PLATFORM
+    xSemaphoreTake(s_State.JobMutex, portMAX_DELAY);
+#endif
+    memcpy(&s_State.CurrentJob, p_Job, sizeof(PdqMiningJob_t));
+    s_State.HasJob = true;
+#ifdef ESP_PLATFORM
+    xSemaphoreGive(s_State.JobMutex);
+#endif
+
+    return PdqOk;
+}
+
+PdqError_t PdqMiningGetStats(PdqMinerStats_t* p_Stats) {
+    if (p_Stats == NULL) return PdqErrorInvalidParam;
+
+    static uint64_t LastTotalHashes = 0;
+    static uint32_t LastStatTime = 0;
+
+#ifdef ESP_PLATFORM
+    uint32_t Now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+    uint32_t Elapsed = Now - LastStatTime;
+
+    if (Elapsed >= 1000) {
+        uint64_t CurrentTotal = s_State.TotalHashes;
+        uint64_t DeltaHashes = CurrentTotal - LastTotalHashes;
+        s_State.HashRate = (uint32_t)(DeltaHashes * 1000 / Elapsed);
+        LastTotalHashes = CurrentTotal;
+        LastStatTime = Now;
+    }
+
+    p_Stats->Uptime = (Now - s_State.StartTime) / 1000;
+#else
+    p_Stats->Uptime = 0;
+#endif
+
+    p_Stats->HashRate = s_State.HashRate;
+    p_Stats->TotalHashes = s_State.TotalHashes;
+    p_Stats->SharesAccepted = s_State.SharesAccepted;
+    p_Stats->SharesRejected = s_State.SharesRejected;
+    p_Stats->BlocksFound = s_State.BlocksFound;
+    p_Stats->Temperature = 0.0f;
+
+    return PdqOk;
+}
+
+bool PdqMiningIsRunning(void) {
+    return s_State.Running;
+}

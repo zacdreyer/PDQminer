@@ -256,7 +256,7 @@ pdqmanager  # Starts web server at http://localhost:5000
 
 ## Project Roadmap
 
-### Phase 1: Foundation (Current)
+### Phase 1: Foundation (Complete)
 
 - [x] Project architecture and documentation
 - [x] Software Design Document (SDD)
@@ -264,11 +264,14 @@ pdqmanager  # Starts web server at http://localhost:5000
 - [x] Coding standards with security/memory best practices
 - [x] PDQManager specification
 - [x] PDQFlasher specification
-- [ ] Project scaffolding and build system
+- [x] Project scaffolding and build system
 
-### Phase 2: Core Development
+### Phase 2: Core Development (In Progress)
 
-- [ ] SHA256 engine with midstate optimization
+- [x] SHA256 engine with midstate optimization
+- [x] Dual-core mining task implementation
+- [x] Hardware abstraction layer (HAL)
+- [x] Benchmark firmware
 - [ ] Stratum V1 client implementation
 - [ ] WiFi manager and captive portal
 - [ ] NVS configuration storage
@@ -276,8 +279,8 @@ pdqmanager  # Starts web server at http://localhost:5000
 
 ### Phase 3: Optimization
 
-- [ ] Performance profiling and benchmarking
-- [ ] SHA256 hot path optimization
+- [x] Performance benchmarking framework
+- [ ] SHA256 hot path profiling
 - [ ] Hardware SHA256 integration (ESP32-S3)
 - [ ] Memory usage optimization
 - [ ] Achieve ≥1000 KH/s target
