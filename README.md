@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo-placeholder.png" alt="PDQminer Logo" width="200"/>
+  <img src="docs/assets/logo-pdqminer.png" alt="PDQminer Logo" width="200"/>
 </p>
 
 <h1 align="center">PDQminer</h1>
