@@ -22,7 +22,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/status-in%20development-orange" alt="Status"/>
   <img src="https://img.shields.io/badge/platform-ESP32-blue" alt="Platform"/>
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="License"/>
+  <img src="https://img.shields.io/badge/license-GPL--3.0-green" alt="License"/>
   <img src="https://img.shields.io/badge/hashrate-≥1000%20KH%2Fs-brightgreen" alt="Hashrate"/>
 </p>
 
@@ -392,7 +392,7 @@ Closes #42
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+GNU General Public License v3.0 - see [LICENSE](LICENSE) for details.
 
 ---
 
