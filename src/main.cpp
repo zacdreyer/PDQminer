@@ -20,15 +20,21 @@
 
 static PdqDeviceConfig_t s_Config;
 static PdqMinerStats_t s_Stats;
+static PdqStratumJob_t s_StratumJob;
+static uint8_t s_Extranonce1[PDQ_STRATUM_MAX_EXTRANONCE_LEN];
+static uint8_t s_Extranonce1Len = 0;
+static uint32_t s_Extranonce2 = 0;
+
+#define SETUP_TIMEOUT_MS 30000
 
 void setup() {
     Serial.begin(115200);
     Serial.println("\n[PDQminer] Starting...");
-    Serial.printf("[PDQminer] Version: %d.%d.%d\n", 
+    Serial.printf("[PDQminer] Version: %d.%d.%d\n",
                   PDQ_VERSION_MAJOR, PDQ_VERSION_MINOR, PDQ_VERSION_PATCH);
 
     PdqHalInit();
-    Serial.printf("[PDQminer] CPU: %lu MHz, Chip ID: %08X\n", 
+    Serial.printf("[PDQminer] CPU: %lu MHz, Chip ID: %08X\n",
                   PdqHalGetCpuFreqMhz(), PdqHalGetChipId());
 
     PdqConfigInit();
@@ -51,13 +57,16 @@ void setup() {
     PdqConfigLoad(&s_Config);
 
     PdqWifiInit();
-    if (PdqWifiConnect(&s_Config.Wifi) != PdqOk) {
+    if (PdqWifiConnect(s_Config.Wifi.Ssid, s_Config.Wifi.Password) != PdqOk) {
         Serial.println("[PDQminer] WiFi failed, starting portal...");
         PdqWifiStartPortal();
         return;
     }
 
-    Serial.println("[PDQminer] WiFi connected");
+    char Ip[16];
+    PdqWifiGetIp(Ip, sizeof(Ip));
+    Serial.printf("[PDQminer] WiFi connected, IP: %s\n", Ip);
+
 #ifndef PDQ_HEADLESS
     PdqDisplayShowMessage("PDQminer", "Connecting pool...");
 #endif
@@ -69,7 +78,34 @@ void setup() {
     }
 
     PdqStratumSubscribe();
-    PdqStratumAuthorize(s_Config.WorkerName, "x");
+
+    uint32_t StartTime = millis();
+    while (PdqStratumGetState() != StratumStateSubscribed) {
+        PdqStratumProcess();
+        if (millis() - StartTime > SETUP_TIMEOUT_MS) {
+            Serial.println("[PDQminer] Subscribe timeout");
+            return;
+        }
+        delay(100);
+    }
+
+    PdqStratumGetExtranonce(s_Extranonce1, &s_Extranonce1Len);
+
+    char Worker[128];
+    snprintf(Worker, sizeof(Worker), "%s.%s", s_Config.WalletAddress, s_Config.WorkerName);
+    Worker[127] = '\0';
+    PdqStratumAuthorize(Worker, "x");
+
+    StartTime = millis();
+    while (PdqStratumGetState() != StratumStateAuthorized &&
+           PdqStratumGetState() != StratumStateReady) {
+        PdqStratumProcess();
+        if (millis() - StartTime > SETUP_TIMEOUT_MS) {
+            Serial.println("[PDQminer] Authorize timeout");
+            return;
+        }
+        delay(100);
+    }
 
     PdqMiningInit();
     PdqMiningStart();
@@ -82,6 +118,7 @@ void setup() {
 
 void loop() {
     if (PdqWifiIsPortalActive()) {
+        PdqWifiProcess();
         delay(100);
         return;
     }
@@ -90,9 +127,28 @@ void loop() {
     PdqApiProcess();
 
     if (PdqStratumHasNewJob()) {
+        PdqStratumGetJob(&s_StratumJob);
+
         PdqMiningJob_t Job;
-        PdqStratumGetJob(&Job);
+        s_Extranonce2++;
+
+        PdqStratumBuildMiningJob(&s_StratumJob,
+                                  s_Extranonce1, s_Extranonce1Len,
+                                  s_Extranonce2, PdqStratumGetExtranonce2Size(),
+                                  PdqStratumGetDifficulty(),
+                                  &Job);
+
+        Job.NonceStart = 0;
+        Job.NonceEnd = 0xFFFFFFFF;
         PdqMiningSetJob(&Job);
+    }
+
+    while (PdqMiningHasShare()) {
+        PdqShareInfo_t Share;
+        if (PdqMiningGetShare(&Share) == PdqOk) {
+            PdqStratumSubmitShare(Share.JobId, Share.Extranonce2, Share.Nonce, Share.NTime);
+            Serial.printf("[PDQminer] Share submitted: nonce=%08X\n", Share.Nonce);
+        }
     }
 
     PdqMiningGetStats(&s_Stats);

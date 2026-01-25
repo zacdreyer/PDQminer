@@ -2201,29 +2201,61 @@ int32_t PdqMdnsInit(void)
 
 ### 12.1 Completed Components
 
-| Component | File | Status | Notes |
-|-----------|------|--------|-------|
-| SHA256 Engine | `src/core/sha256_engine.c` | **Complete** | 64-round unrolled, midstate optimization, IRAM placement |
-| Mining Task | `src/core/mining_task.c` | **Complete** | Dual-core FreeRTOS tasks, atomic counters, proper nonce splitting |
-| Board HAL | `src/hal/board_hal.c` | **Complete** | WDT, temp, heap, chip ID using ESP-IDF APIs |
-| Benchmark Firmware | `src/main_benchmark.cpp` | **Complete** | Single/dual-core hashrate measurement |
-| Main Entry Point | `src/main.cpp` | **Complete** | Full initialization sequence |
-| Build System | `platformio.ini` | **Complete** | CYD boards, headless, debug, benchmark environments |
+| Component          | File                           | Status       | Notes                                                             |
+| --------------------| --------------------------------| --------------| -------------------------------------------------------------------|
+| SHA256 Engine      | `src/core/sha256_engine.c`     | **Complete** | 64-round unrolled, midstate optimization, IRAM placement          |
+| Mining Task        | `src/core/mining_task.c`       | **Complete** | Dual-core FreeRTOS tasks, atomic counters, proper nonce splitting |
+| Board HAL          | `src/hal/board_hal.c`          | **Complete** | WDT, temp, heap, chip ID using ESP-IDF APIs                       |
+| Benchmark Firmware | `src/main_benchmark.cpp`       | **Complete** | Single/dual-core hashrate measurement                             |
+| Stratum Client     | `src/stratum/stratum_client.c` | **Complete** | Full V1 protocol, job building, merkle root computation           |
+| WiFi Manager       | `src/network/wifi_manager.cpp` | **Complete** | Captive portal, NVS config saving                                 |
+| Config Manager     | `src/config/config_manager.c`  | **Complete** | NVS storage for all settings                                      |
+| Main Entry Point   | `src/main.cpp`                 | **Complete** | Full initialization sequence with timeout handling                |
+| Build System       | `platformio.ini`               | **Complete** | CYD boards, headless, debug, benchmark environments               |
 
 ### 12.2 Stub Components (Awaiting Implementation)
 
 | Component | File | Phase |
 |-----------|------|-------|
-| Stratum Client | `src/stratum/stratum_client.c` | Phase B |
-| WiFi Manager | `src/network/wifi_manager.c` | Phase B |
-| Config Manager | `src/config/config_manager.c` | Phase B |
 | Display Driver | `src/display/display_driver.c` | Phase C |
 | Device API | `src/api/device_api.c` | Phase D |
 
 ### 12.3 Verified Builds
 
-- `esp32_headless` - Compiles successfully
+- `esp32_headless` - Compiles successfully (RAM: 15.9%, Flash: 59.3%)
 - `benchmark` - Compiles successfully
+
+### 12.4 Code Review Status
+
+| Component      | Accuracy  | Security | Optimization | Notes                                                |
+| ----------------| -----------| ----------| --------------| ------------------------------------------------------|
+| SHA256 Engine  | **Fixed** | N/A      | Optimized    | 64-round unroll, padding fix, nonce endianness fix   |
+| Mining Task    | **Fixed** | Fixed    | Good         | Atomic counters, share queue, job versioning         |
+| Stratum Client | Fixed     | Fixed    | Good         | strncpy null-term, extranonce2 submit, job building  |
+| WiFi Manager   | Verified  | Secure   | Good         | Form parsing, NVS save, strncpy null-term            |
+| Config Manager | Verified  | Good     | Good         | Magic validation                                     |
+| Main           | **Fixed** | Good     | Good         | Timeout handling, share submission, dynamic en2 size |
+
+### 12.5 API Changes Log
+
+| Version | Change | Reason |
+|---------|--------|--------|
+| 0.1.0 | `PdqStratumSubmitShare()` added `Extranonce2` parameter | Required for correct share submission |
+| 0.1.0 | `PdqMiningJob_t.JobId` changed from `uint64_t` to `char[65]` | Stratum uses string job IDs |
+| 0.1.0 | Added `PdqShareInfo_t` struct | Store share data for submission |
+| 0.1.0 | Added `PdqMiningHasShare()` and `PdqMiningGetShare()` | Share queue interface |
+| 0.1.0 | Added `PdqStratumGetExtranonce2Size()` | Get pool-specified extranonce2 length |
+| 0.1.0 | Added `MiningState_t.JobVersion` | Detect new jobs and restart mining |
+| 0.1.0 | Changed `WriteBe32` to `WriteLe32` for nonce | Bitcoin protocol compliance |
+
+### 12.6 Critical Bug Fixes (Session 18)
+
+| Bug | Location | Impact | Fix |
+|-----|----------|--------|-----|
+| Uninitialized padding memory | sha256_engine.c:282-287 | Hash computation could fail randomly | Extended memset to cover bytes 33-63 |
+| Nonce written big-endian | sha256_engine.c:275 | ALL shares would be rejected | Changed to WriteLe32 |
+| Stale job mining | mining_task.c | Mining outdated jobs, wasting cycles | Added JobVersion tracking |
+| Hardcoded extranonce2 size | main.cpp:137 | Incompatibility with some pools | Use PdqStratumGetExtranonce2Size() |
 
 ---
 

@@ -68,6 +68,13 @@ static inline void WriteBe32(uint8_t* p_Data, uint32_t Value) {
     p_Data[3] = (uint8_t)Value;
 }
 
+static inline void WriteLe32(uint8_t* p_Data, uint32_t Value) {
+    p_Data[0] = (uint8_t)Value;
+    p_Data[1] = (uint8_t)(Value >> 8);
+    p_Data[2] = (uint8_t)(Value >> 16);
+    p_Data[3] = (uint8_t)(Value >> 24);
+}
+
 PDQ_IRAM_ATTR static void Sha256Transform(uint32_t* p_State, const uint8_t* p_Block) {
     register uint32_t a, b, c, d, e, f, g, h;
     uint32_t W[64];
@@ -265,7 +272,7 @@ PDQ_IRAM_ATTR PdqError_t PdqSha256MineBlock(const PdqMiningJob_t* p_Job, uint32_
     memcpy(Block, p_Job->BlockTail, 64);
 
     for (uint32_t Nonce = p_Job->NonceStart; Nonce <= p_Job->NonceEnd; Nonce++) {
-        WriteBe32(Block + 12, Nonce);
+        WriteLe32(Block + 12, Nonce);
 
         uint32_t State[8];
         memcpy(State, MidState, sizeof(MidState));
@@ -282,9 +289,8 @@ PDQ_IRAM_ATTR PdqError_t PdqSha256MineBlock(const PdqMiningJob_t* p_Job, uint32_
         uint8_t PaddedHash[64];
         memcpy(PaddedHash, FirstHash, 32);
         PaddedHash[32] = 0x80;
-        memset(PaddedHash + 33, 0, 23);
+        memset(PaddedHash + 33, 0, 31);
         PaddedHash[62] = 0x01;
-        PaddedHash[63] = 0x00;
 
         Sha256Transform(FinalState, PaddedHash);
 

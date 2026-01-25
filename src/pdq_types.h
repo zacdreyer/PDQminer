@@ -41,8 +41,17 @@ typedef struct __attribute__((aligned(4))) {
     uint32_t NonceStart;
     uint32_t NonceEnd;
     uint32_t Target[8];
-    uint64_t JobId;
+    char     JobId[65];
+    uint32_t Extranonce2;
+    uint32_t NTime;
 } PdqMiningJob_t;
+
+typedef struct {
+    char     JobId[65];
+    uint32_t Extranonce2;
+    uint32_t Nonce;
+    uint32_t NTime;
+} PdqShareInfo_t;
 
 typedef struct {
     uint32_t HashRate;

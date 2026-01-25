@@ -20,6 +20,8 @@ PdqError_t PdqMiningStop(void);
 PdqError_t PdqMiningSetJob(const PdqMiningJob_t* p_Job);
 PdqError_t PdqMiningGetStats(PdqMinerStats_t* p_Stats);
 bool       PdqMiningIsRunning(void);
+bool       PdqMiningHasShare(void);
+PdqError_t PdqMiningGetShare(PdqShareInfo_t* p_Share);
 
 #ifdef __cplusplus
 }

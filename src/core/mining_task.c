@@ -13,6 +13,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/queue.h"
 #include "esp_task_wdt.h"
 #define PDQ_IRAM_ATTR IRAM_ATTR
 #else
@@ -23,10 +24,12 @@
 #define PDQ_MINING_PRIORITY     5
 #define PDQ_NONCE_BATCH_SIZE    4096
 #define PDQ_WDT_FEED_INTERVAL   1000
+#define PDQ_SHARE_QUEUE_SIZE    8
 
 typedef struct {
     volatile bool           Running;
     volatile bool           HasJob;
+    volatile uint32_t       JobVersion;
     volatile uint64_t       TotalHashes;
     volatile uint32_t       HashRate;
     volatile uint32_t       SharesAccepted;
@@ -37,12 +40,27 @@ typedef struct {
 #ifdef ESP_PLATFORM
     TaskHandle_t            TaskHandle[2];
     SemaphoreHandle_t       JobMutex;
+    QueueHandle_t           ShareQueue;
+#else
+    PdqShareInfo_t          ShareBuffer[PDQ_SHARE_QUEUE_SIZE];
+    volatile uint8_t        ShareHead;
+    volatile uint8_t        ShareTail;
 #endif
 } MiningState_t;
 
 static MiningState_t s_State = {0};
 
 #ifdef ESP_PLATFORM
+static void QueueShare(const PdqMiningJob_t* p_Job, uint32_t Nonce) {
+    PdqShareInfo_t Share;
+    strncpy(Share.JobId, p_Job->JobId, 64);
+    Share.JobId[64] = '\0';
+    Share.Extranonce2 = p_Job->Extranonce2;
+    Share.Nonce = Nonce;
+    Share.NTime = p_Job->NTime;
+    xQueueSend(s_State.ShareQueue, &Share, 0);
+}
+
 PDQ_IRAM_ATTR static void MiningTaskCore0(void* p_Param) {
     esp_task_wdt_add(NULL);
     uint32_t LastWdtFeed = 0;
@@ -57,11 +75,12 @@ PDQ_IRAM_ATTR static void MiningTaskCore0(void* p_Param) {
 
         xSemaphoreTake(s_State.JobMutex, portMAX_DELAY);
         PdqMiningJob_t Job = s_State.CurrentJob;
+        uint32_t MyJobVersion = s_State.JobVersion;
         Job.NonceStart = 0x00000000;
         Job.NonceEnd = 0x7FFFFFFF;
         xSemaphoreGive(s_State.JobMutex);
 
-        for (uint32_t Base = Job.NonceStart; Base <= Job.NonceEnd && s_State.Running && s_State.HasJob; Base += PDQ_NONCE_BATCH_SIZE) {
+        for (uint32_t Base = Job.NonceStart; Base <= Job.NonceEnd && s_State.Running && s_State.JobVersion == MyJobVersion; Base += PDQ_NONCE_BATCH_SIZE) {
             PdqMiningJob_t BatchJob = Job;
             BatchJob.NonceStart = Base;
             BatchJob.NonceEnd = Base + PDQ_NONCE_BATCH_SIZE - 1;
@@ -74,6 +93,7 @@ PDQ_IRAM_ATTR static void MiningTaskCore0(void* p_Param) {
             LocalHashes += (BatchJob.NonceEnd - BatchJob.NonceStart + 1);
 
             if (Found) {
+                QueueShare(&Job, Nonce);
                 __atomic_fetch_add(&s_State.BlocksFound, 1, __ATOMIC_RELAXED);
             }
 
@@ -109,11 +129,12 @@ PDQ_IRAM_ATTR static void MiningTaskCore1(void* p_Param) {
 
         xSemaphoreTake(s_State.JobMutex, portMAX_DELAY);
         PdqMiningJob_t Job = s_State.CurrentJob;
+        uint32_t MyJobVersion = s_State.JobVersion;
         Job.NonceStart = 0x80000000;
         Job.NonceEnd = 0xFFFFFFFF;
         xSemaphoreGive(s_State.JobMutex);
 
-        for (uint32_t Base = Job.NonceStart; Base <= Job.NonceEnd && s_State.Running && s_State.HasJob; Base += PDQ_NONCE_BATCH_SIZE) {
+        for (uint32_t Base = Job.NonceStart; Base <= Job.NonceEnd && s_State.Running && s_State.JobVersion == MyJobVersion; Base += PDQ_NONCE_BATCH_SIZE) {
             PdqMiningJob_t BatchJob = Job;
             BatchJob.NonceStart = Base;
             BatchJob.NonceEnd = Base + PDQ_NONCE_BATCH_SIZE - 1;
@@ -126,6 +147,7 @@ PDQ_IRAM_ATTR static void MiningTaskCore1(void* p_Param) {
             LocalHashes += (BatchJob.NonceEnd - BatchJob.NonceStart + 1);
 
             if (Found) {
+                QueueShare(&Job, Nonce);
                 __atomic_fetch_add(&s_State.BlocksFound, 1, __ATOMIC_RELAXED);
             }
 
@@ -153,6 +175,8 @@ PdqError_t PdqMiningInit(void) {
 #ifdef ESP_PLATFORM
     s_State.JobMutex = xSemaphoreCreateMutex();
     if (s_State.JobMutex == NULL) return PdqErrorNoMemory;
+    s_State.ShareQueue = xQueueCreate(PDQ_SHARE_QUEUE_SIZE, sizeof(PdqShareInfo_t));
+    if (s_State.ShareQueue == NULL) return PdqErrorNoMemory;
 #endif
     return PdqOk;
 }
@@ -205,6 +229,7 @@ PdqError_t PdqMiningSetJob(const PdqMiningJob_t* p_Job) {
     xSemaphoreTake(s_State.JobMutex, portMAX_DELAY);
 #endif
     memcpy(&s_State.CurrentJob, p_Job, sizeof(PdqMiningJob_t));
+    s_State.JobVersion++;
     s_State.HasJob = true;
 #ifdef ESP_PLATFORM
     xSemaphoreGive(s_State.JobMutex);
@@ -248,4 +273,27 @@ PdqError_t PdqMiningGetStats(PdqMinerStats_t* p_Stats) {
 
 bool PdqMiningIsRunning(void) {
     return s_State.Running;
+}
+
+bool PdqMiningHasShare(void) {
+#ifdef ESP_PLATFORM
+    return uxQueueMessagesWaiting(s_State.ShareQueue) > 0;
+#else
+    return s_State.ShareHead != s_State.ShareTail;
+#endif
+}
+
+PdqError_t PdqMiningGetShare(PdqShareInfo_t* p_Share) {
+    if (p_Share == NULL) return PdqErrorInvalidParam;
+#ifdef ESP_PLATFORM
+    if (xQueueReceive(s_State.ShareQueue, p_Share, 0) == pdTRUE) {
+        return PdqOk;
+    }
+    return PdqErrorInvalidParam;
+#else
+    if (s_State.ShareHead == s_State.ShareTail) return PdqErrorInvalidParam;
+    *p_Share = s_State.ShareBuffer[s_State.ShareTail];
+    s_State.ShareTail = (s_State.ShareTail + 1) % PDQ_SHARE_QUEUE_SIZE;
+    return PdqOk;
+#endif
 }
