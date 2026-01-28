@@ -8,7 +8,7 @@
 #ifndef PDQ_DISPLAY_DRIVER_H
 #define PDQ_DISPLAY_DRIVER_H
 
-#include "pdq_types.h"
+#include "../pdq_types.h"
 
 #ifdef __cplusplus
 extern "C" {
