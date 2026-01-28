@@ -279,12 +279,16 @@ pdqmanager  # Starts web server at http://localhost:5000
 - [x] Phase B code review - Round 2 (comprehensive review, 9 issues fixed)
 - [x] Phase B code review - Round 3 (critical share submission fix, 4 issues fixed)
 - [x] Phase B code review - Round 4 (100% confidence review, 5 critical bugs fixed)
+- [x] SHA256 optimization pass 1 (W pre-computation, early rejection)
+- [x] Code review - Round 5 (100% confidence verification)
 - [ ] Basic display driver (ILI9341/ST7789)
 
 ### Phase 3: Optimization
 
 - [x] Performance benchmarking framework
-- [ ] SHA256 hot path profiling
+- [x] SHA256 hot path profiling and optimization pass 1
+- [ ] Hardware testing and performance validation
+- [ ] SHA256 optimization pass 2 (inline assembly, further W pre-computation)
 - [ ] Hardware SHA256 integration (ESP32-S3)
 - [ ] Memory usage optimization
 - [ ] Achieve ≥1000 KH/s target

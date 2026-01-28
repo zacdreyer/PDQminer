@@ -258,6 +258,81 @@ PDQ_IRAM_ATTR static bool CheckTarget(const uint32_t* p_Hash, const uint32_t* p_
     return true;
 }
 
+PDQ_IRAM_ATTR static void Sha256TransformW(uint32_t* p_State, const uint32_t* p_W) {
+    register uint32_t a, b, c, d, e, f, g, h;
+
+    a = p_State[0]; b = p_State[1]; c = p_State[2]; d = p_State[3];
+    e = p_State[4]; f = p_State[5]; g = p_State[6]; h = p_State[7];
+
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[0], p_W[0]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[1], p_W[1]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[2], p_W[2]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[3], p_W[3]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[4], p_W[4]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[5], p_W[5]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[6], p_W[6]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[7], p_W[7]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[8], p_W[8]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[9], p_W[9]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[10], p_W[10]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[11], p_W[11]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[12], p_W[12]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[13], p_W[13]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[14], p_W[14]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[15], p_W[15]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[16], p_W[16]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[17], p_W[17]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[18], p_W[18]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[19], p_W[19]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[20], p_W[20]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[21], p_W[21]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[22], p_W[22]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[23], p_W[23]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[24], p_W[24]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[25], p_W[25]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[26], p_W[26]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[27], p_W[27]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[28], p_W[28]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[29], p_W[29]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[30], p_W[30]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[31], p_W[31]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[32], p_W[32]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[33], p_W[33]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[34], p_W[34]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[35], p_W[35]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[36], p_W[36]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[37], p_W[37]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[38], p_W[38]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[39], p_W[39]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[40], p_W[40]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[41], p_W[41]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[42], p_W[42]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[43], p_W[43]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[44], p_W[44]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[45], p_W[45]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[46], p_W[46]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[47], p_W[47]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[48], p_W[48]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[49], p_W[49]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[50], p_W[50]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[51], p_W[51]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[52], p_W[52]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[53], p_W[53]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[54], p_W[54]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[55], p_W[55]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[56], p_W[56]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[57], p_W[57]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[58], p_W[58]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[59], p_W[59]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[60], p_W[60]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[61], p_W[61]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[62], p_W[62]);
+    SHA256_ROUND(a,b,c,d,e,f,g,h, K[63], p_W[63]);
+
+    p_State[0] += a; p_State[1] += b; p_State[2] += c; p_State[3] += d;
+    p_State[4] += e; p_State[5] += f; p_State[6] += g; p_State[7] += h;
+}
+
 PDQ_IRAM_ATTR PdqError_t PdqSha256MineBlock(const PdqMiningJob_t* p_Job, uint32_t* p_Nonce, bool* p_Found) {
     if (p_Job == NULL || p_Nonce == NULL || p_Found == NULL) return PdqErrorInvalidParam;
 
@@ -268,36 +343,67 @@ PDQ_IRAM_ATTR PdqError_t PdqSha256MineBlock(const PdqMiningJob_t* p_Job, uint32_
         MidState[i] = ReadBe32(p_Job->Midstate + i * 4);
     }
 
-    uint8_t Block[64];
-    memcpy(Block, p_Job->BlockTail, 64);
+    uint32_t W1Base[16];
+    for (int i = 0; i < 16; i++) {
+        W1Base[i] = ReadBe32(p_Job->BlockTail + i * 4);
+    }
+
+    uint32_t W1Pre16 = SIG1(W1Base[14]) + W1Base[9] + SIG0(W1Base[1]) + W1Base[0];
+    uint32_t W1Pre17 = SIG1(W1Base[15]) + W1Base[10] + SIG0(W1Base[2]) + W1Base[1];
+    uint32_t W1Pre18Base = SIG1(W1Pre16) + W1Base[11] + W1Base[2];
+
+    uint32_t TargetHigh = p_Job->Target[7];
 
     for (uint32_t Nonce = p_Job->NonceStart; Nonce <= p_Job->NonceEnd; Nonce++) {
-        WriteLe32(Block + 12, Nonce);
+        uint32_t NonceSwap = __builtin_bswap32(Nonce);
+
+        uint32_t W1[64];
+        W1[0] = W1Base[0]; W1[1] = W1Base[1]; W1[2] = W1Base[2];
+        W1[3] = NonceSwap;
+        W1[4] = W1Base[4]; W1[5] = W1Base[5]; W1[6] = W1Base[6]; W1[7] = W1Base[7];
+        W1[8] = W1Base[8]; W1[9] = W1Base[9]; W1[10] = W1Base[10]; W1[11] = W1Base[11];
+        W1[12] = W1Base[12]; W1[13] = W1Base[13]; W1[14] = W1Base[14]; W1[15] = W1Base[15];
+        W1[16] = W1Pre16;
+        W1[17] = W1Pre17;
+        W1[18] = W1Pre18Base + SIG0(NonceSwap);
+
+        for (int i = 19; i < 64; i++) {
+            W1[i] = SIG1(W1[i-2]) + W1[i-7] + SIG0(W1[i-15]) + W1[i-16];
+        }
 
         uint32_t State[8];
-        memcpy(State, MidState, sizeof(MidState));
-        Sha256Transform(State, Block);
+        State[0] = MidState[0]; State[1] = MidState[1];
+        State[2] = MidState[2]; State[3] = MidState[3];
+        State[4] = MidState[4]; State[5] = MidState[5];
+        State[6] = MidState[6]; State[7] = MidState[7];
 
-        uint8_t FirstHash[32];
-        for (int i = 0; i < 8; i++) {
-            WriteBe32(FirstHash + i * 4, State[i]);
+        Sha256TransformW(State, W1);
+
+        uint32_t W2[64];
+        W2[0] = State[0]; W2[1] = State[1]; W2[2] = State[2]; W2[3] = State[3];
+        W2[4] = State[4]; W2[5] = State[5]; W2[6] = State[6]; W2[7] = State[7];
+        W2[8] = 0x80000000;
+        W2[9] = 0; W2[10] = 0; W2[11] = 0; W2[12] = 0; W2[13] = 0; W2[14] = 0;
+        W2[15] = 256;
+
+        for (int i = 16; i < 64; i++) {
+            W2[i] = SIG1(W2[i-2]) + W2[i-7] + SIG0(W2[i-15]) + W2[i-16];
         }
 
         uint32_t FinalState[8];
-        memcpy(FinalState, H_INIT, sizeof(H_INIT));
+        FinalState[0] = H_INIT[0]; FinalState[1] = H_INIT[1];
+        FinalState[2] = H_INIT[2]; FinalState[3] = H_INIT[3];
+        FinalState[4] = H_INIT[4]; FinalState[5] = H_INIT[5];
+        FinalState[6] = H_INIT[6]; FinalState[7] = H_INIT[7];
 
-        uint8_t PaddedHash[64];
-        memcpy(PaddedHash, FirstHash, 32);
-        PaddedHash[32] = 0x80;
-        memset(PaddedHash + 33, 0, 31);
-        PaddedHash[62] = 0x01;
+        Sha256TransformW(FinalState, W2);
 
-        Sha256Transform(FinalState, PaddedHash);
-
-        if (CheckTarget(FinalState, p_Job->Target)) {
-            *p_Nonce = Nonce;
-            *p_Found = true;
-            return PdqOk;
+        if (FinalState[7] <= TargetHigh) {
+            if (CheckTarget(FinalState, p_Job->Target)) {
+                *p_Nonce = Nonce;
+                *p_Found = true;
+                return PdqOk;
+            }
         }
     }
 
