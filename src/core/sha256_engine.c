@@ -343,26 +343,26 @@ PDQ_IRAM_ATTR PdqError_t PdqSha256MineBlock(const PdqMiningJob_t* p_Job, uint32_
         MidState[i] = ReadBe32(p_Job->Midstate + i * 4);
     }
 
-    uint32_t W1Base[16];
+    uint32_t W1[64];
     for (int i = 0; i < 16; i++) {
-        W1Base[i] = ReadBe32(p_Job->BlockTail + i * 4);
+        W1[i] = ReadBe32(p_Job->BlockTail + i * 4);
     }
 
-    uint32_t W1Pre16 = SIG1(W1Base[14]) + W1Base[9] + SIG0(W1Base[1]) + W1Base[0];
-    uint32_t W1Pre17 = SIG1(W1Base[15]) + W1Base[10] + SIG0(W1Base[2]) + W1Base[1];
-    uint32_t W1Pre18Base = SIG1(W1Pre16) + W1Base[11] + W1Base[2];
+    uint32_t W1Pre16 = SIG1(W1[14]) + W1[9] + SIG0(W1[1]) + W1[0];
+    uint32_t W1Pre17 = SIG1(W1[15]) + W1[10] + SIG0(W1[2]) + W1[1];
+    uint32_t W1Pre18Base = SIG1(W1Pre16) + W1[11] + W1[2];
 
     uint32_t TargetHigh = p_Job->Target[7];
+
+    static const uint32_t W2_8 = 0x80000000;
+    static const uint32_t W2_15 = 256;
+    static const uint32_t W2_SIG1_15 = 0x00A00000;
+    static const uint32_t W2_SIG0_8 = 0x11002000;
 
     for (uint32_t Nonce = p_Job->NonceStart; Nonce <= p_Job->NonceEnd; Nonce++) {
         uint32_t NonceSwap = __builtin_bswap32(Nonce);
 
-        uint32_t W1[64];
-        W1[0] = W1Base[0]; W1[1] = W1Base[1]; W1[2] = W1Base[2];
         W1[3] = NonceSwap;
-        W1[4] = W1Base[4]; W1[5] = W1Base[5]; W1[6] = W1Base[6]; W1[7] = W1Base[7];
-        W1[8] = W1Base[8]; W1[9] = W1Base[9]; W1[10] = W1Base[10]; W1[11] = W1Base[11];
-        W1[12] = W1Base[12]; W1[13] = W1Base[13]; W1[14] = W1Base[14]; W1[15] = W1Base[15];
         W1[16] = W1Pre16;
         W1[17] = W1Pre17;
         W1[18] = W1Pre18Base + SIG0(NonceSwap);
@@ -382,11 +382,21 @@ PDQ_IRAM_ATTR PdqError_t PdqSha256MineBlock(const PdqMiningJob_t* p_Job, uint32_
         uint32_t W2[64];
         W2[0] = State[0]; W2[1] = State[1]; W2[2] = State[2]; W2[3] = State[3];
         W2[4] = State[4]; W2[5] = State[5]; W2[6] = State[6]; W2[7] = State[7];
-        W2[8] = 0x80000000;
+        W2[8] = W2_8;
         W2[9] = 0; W2[10] = 0; W2[11] = 0; W2[12] = 0; W2[13] = 0; W2[14] = 0;
-        W2[15] = 256;
+        W2[15] = W2_15;
 
-        for (int i = 16; i < 64; i++) {
+        W2[16] = SIG0(W2[1]) + W2[0];
+        W2[17] = W2_SIG1_15 + SIG0(W2[2]) + W2[1];
+        W2[18] = SIG1(W2[16]) + SIG0(W2[3]) + W2[2];
+        W2[19] = SIG1(W2[17]) + SIG0(W2[4]) + W2[3];
+        W2[20] = SIG1(W2[18]) + SIG0(W2[5]) + W2[4];
+        W2[21] = SIG1(W2[19]) + SIG0(W2[6]) + W2[5];
+        W2[22] = SIG1(W2[20]) + W2_15 + SIG0(W2[7]) + W2[6];
+        W2[23] = SIG1(W2[21]) + W2[16] + W2_SIG0_8 + W2[7];
+        W2[24] = SIG1(W2[22]) + W2[17] + W2_8;
+
+        for (int i = 25; i < 64; i++) {
             W2[i] = SIG1(W2[i-2]) + W2[i-7] + SIG0(W2[i-15]) + W2[i-16];
         }
 

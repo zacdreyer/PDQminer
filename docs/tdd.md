@@ -1896,7 +1896,36 @@ test/
 1. Removed unused `s_LastHashRate` variable (dead code)
 2. Fixed stale display area when BlocksFound=0 (now clears area)
 
-**Total Issues Resolved:** 20
+**Round 7 - Critical SHA256 Bug Fix:**
+
+| Component | Review Status | Issues Found | Issues Fixed |
+|-----------|---------------|--------------|--------------|
+| SHA256 Engine | **CRITICAL** | 1 | 1 (W2_SIG0_8 constant) |
+| W1 Pre-computation | **VERIFIED** | 0 | - |
+| W2 Expansion | **VERIFIED** | 0 | - |
+| CheckTarget | **VERIFIED** | 0 | - |
+| Buffer Safety | **VERIFIED** | 0 | - |
+| Input Validation | **VERIFIED** | 0 | - |
+
+**Critical Bug Fixed in Round 7:**
+- **Location**: `src/core/sha256_engine.c:360`
+- **Issue**: `W2_SIG0_8 = 0x00800001` (WRONG)
+- **Fix**: `W2_SIG0_8 = 0x11002000` (CORRECT)
+- **Impact**: Would have caused all hash calculations to fail
+
+**Round 8 - Comprehensive Verification:**
+
+| Component | Review Status | Issues Found | Issues Fixed |
+|-----------|---------------|--------------|--------------|
+| SHA256 Engine | **VERIFIED** | 0 | - (W2_SIG0_8 = 0x11002000 confirmed) |
+| Mining Task | **VERIFIED** | 0 | - (dual-core, nonce overflow handling) |
+| Stratum Client | **VERIFIED** | 0 | - (job building, padding correct) |
+| Block Header | **VERIFIED** | 0 | - (80-byte, midstate, tail correct) |
+| SHA256 Padding | **VERIFIED** | 0 | - (0x80 + zeros + 0x0280 length) |
+| Security | **VERIFIED** | 0 | - (no buffer overflows) |
+| All Builds | **PASS** | 0 | - (4 environments compile) |
+
+**Total Issues Resolved:** 21
 
 ### 13.4 Pending Test Implementation
 
@@ -1920,6 +1949,9 @@ The following optimizations have been verified correct:
 | W1[18] partial pre-comp | **VERIFIED** | SIG1(W1Pre16) + W[11] + W[2] + SIG0(nonce) |
 | Nonce byte swap | **VERIFIED** | `__builtin_bswap32()` for little-endian storage |
 | W2 padding | **VERIFIED** | 0x80000000 at W2[8], 256 at W2[15] |
+| W2_SIG1_15 constant | **VERIFIED** | SIG1(256) = 0x00A00000 |
+| W2_SIG0_8 constant | **FIXED** | SIG0(0x80000000) = 0x11002000 |
+| W2[16-24] expansion | **VERIFIED** | All formulas mathematically correct |
 | Early rejection | **VERIFIED** | FinalState[7] vs TargetHigh before full compare |
 
 ### 13.6 Display Driver Verification

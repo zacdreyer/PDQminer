@@ -288,10 +288,12 @@ pdqmanager  # Starts web server at http://localhost:5000
 
 - [x] Performance benchmarking framework
 - [x] SHA256 hot path profiling and optimization pass 1
+- [x] SHA256 optimization pass 2 (W2 pre-computation, loop reduction)
+- [x] Code review - Round 7 (critical W2_SIG0_8 bug fix)
+- [x] Memory usage analysis and optimization
 - [ ] Hardware testing and performance validation
-- [ ] SHA256 optimization pass 2 (inline assembly, further W pre-computation)
+- [ ] Inline assembly optimization (Xtensa ROTR)
 - [ ] Hardware SHA256 integration (ESP32-S3)
-- [ ] Memory usage optimization
 - [ ] Achieve ≥1000 KH/s target
 
 ### Phase 4: Tools

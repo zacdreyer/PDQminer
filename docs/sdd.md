@@ -2273,7 +2273,20 @@ int32_t PdqMdnsInit(void)
 | Optimized transform | `Sha256TransformW()` takes W array directly | 16 ReadBe32 per transform |
 | Reduced loop start | W1 expansion starts at index 19 | 3 fewer iterations per nonce |
 
-### 12.8 Display Driver Implementation (Session 21)
+### 12.8 SHA256 Optimization Pass 2 (Session 22)
+
+| Optimization | Description | Savings |
+|--------------|-------------|---------|
+| W2 constant pre-computation | SIG1(256), SIG0(0x80000000) pre-computed | 2 SIG operations per nonce |
+| W2[16-24] explicit expansion | Eliminates zero additions and loop overhead | ~8 fewer iterations per nonce |
+| W1 array reuse | Single W1[64] array, only W1[3] updated per nonce | ~15 memory copies per nonce |
+| Reduced W2 loop | W2 expansion starts at index 25 instead of 16 | 9 fewer iterations per nonce |
+
+**Pre-computed W2 Constants:**
+- `W2_SIG1_15 = SIG1(256) = 0x00A00000`
+- `W2_SIG0_8 = SIG0(0x80000000) = 0x11002000` (corrected in Session 23)
+
+### 12.9 Display Driver Implementation (Session 21)
 
 | Feature | Description |
 |---------|-------------|
@@ -2283,6 +2296,49 @@ int32_t PdqMdnsInit(void)
 | Color-coded Temp | White (<55C), Orange (55-70C), Red (>70C) |
 | Rate Limiting | Display updates throttled to 500ms minimum |
 | Headless Support | All functions compile to no-ops when PDQ_HEADLESS defined |
+
+### 12.10 Memory Analysis (Session 22)
+
+| Component | RAM Usage | Notes |
+|-----------|-----------|-------|
+| IotWebConf (s_Ctx) | 5,884 bytes | Config portal context |
+| WiFi (g_cnxMgr) | 3,800 bytes | Connection manager |
+| Stratum Job | 1,144 bytes | Job buffer with coinbase |
+| DNS Table | 1,184 bytes | LWIP DNS cache |
+| SHA256 K constants | 640 bytes | DRAM for cache locality |
+| **Total BSS** | 28,449 bytes | 8.7% of available |
+| **Total Data** | 127,236 bytes | Initialized data |
+
+### 12.11 Code Review Round 7 - Critical Bug Fix (Session 23)
+
+**Critical Bug Found and Fixed:**
+
+| Issue | Details |
+|-------|---------|
+| Location | `src/core/sha256_engine.c:360` |
+| Constant | `W2_SIG0_8` |
+| Incorrect | `0x00800001` |
+| Correct | `0x11002000` |
+
+**Mathematical Verification:**
+```
+SIG0(x) = ROTR(x, 7) ^ ROTR(x, 18) ^ (x >> 3)
+
+For x = 0x80000000:
+  ROTR(0x80000000, 7)  = 0x01000000
+  ROTR(0x80000000, 18) = 0x00002000
+  0x80000000 >> 3      = 0x10000000
+
+Result: 0x01000000 ^ 0x00002000 ^ 0x10000000 = 0x11002000
+```
+
+**Security Review Results:**
+| Category | Status |
+|----------|--------|
+| Buffer safety | PASS - strncpy/snprintf throughout |
+| Input validation | PASS - NULL checks on all public APIs |
+| Password handling | PASS - proper bounds checking |
+| Integer overflow | PASS - no unsafe arithmetic |
 
 ---
 
