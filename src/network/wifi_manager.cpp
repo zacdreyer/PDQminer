@@ -45,6 +45,12 @@ input,select{width:100%;padding:8px;margin:5px 0 15px;box-sizing:border-box}
 button{background:#007bff;color:#fff;padding:10px 20px;border:none;cursor:pointer;width:100%}
 .section{border:1px solid #ddd;padding:15px;margin:10px 0;border-radius:5px}
 h3{margin-top:0}
+.wifi-list{max-height:200px;overflow-y:auto;border:1px solid #ccc;margin:5px 0 15px;border-radius:4px}
+.wifi-item{padding:10px;cursor:pointer;border-bottom:1px solid #eee;display:flex;justify-content:space-between}
+.wifi-item:hover{background:#f0f0f0}
+.wifi-item:last-child{border-bottom:none}
+.signal{color:#666;font-size:12px}
+.scan-btn{background:#28a745;margin-bottom:10px}
 </style>
 </head>
 <body>
@@ -52,13 +58,16 @@ h3{margin-top:0}
 <form action="/save" method="POST">
 <div class="section">
 <h3>WiFi Network</h3>
+<button type="button" class="scan-btn" onclick="scanWifi()">Scan for Networks</button>
+<div id="wifi-list" class="wifi-list" style="display:none"></div>
 <label>SSID</label><input type="text" name="ssid" id="ssid" maxlength="32" required>
 <label>Password</label><input type="password" name="wifi_pass" maxlength="64">
 </div>
 <div class="section">
 <h3>Primary Pool</h3>
 <label>Host</label><input type="text" name="pool1_host" value="public-pool.io" maxlength="63">
-<label>Port</label><input type="number" name="pool1_port" value="21496" min="1" max="65535">
+<label>Port</label><input type="number" name="pool1_port" value="3333" min="1" max="65535">
+<label>Pool Password</label><input type="text" name="pool1_pass" value="x" maxlength="64">
 </div>
 <div class="section">
 <h3>Wallet</h3>
@@ -67,9 +76,53 @@ h3{margin-top:0}
 </div>
 <button type="submit">Save & Reboot</button>
 </form>
+<script>
+function scanWifi(){
+var btn=document.querySelector('.scan-btn');
+btn.textContent='Scanning...';btn.disabled=true;
+fetch('/scan').then(r=>r.json()).then(d=>{
+var list=document.getElementById('wifi-list');
+list.innerHTML='';
+if(d.length===0){list.innerHTML='<div class="wifi-item">No networks found</div>';}
+else{d.forEach(n=>{
+var div=document.createElement('div');
+div.className='wifi-item';
+div.innerHTML='<span>'+n.ssid+'</span><span class="signal">'+n.rssi+' dBm</span>';
+div.onclick=function(){document.getElementById('ssid').value=n.ssid;};
+list.appendChild(div);
+});}
+list.style.display='block';
+btn.textContent='Scan for Networks';btn.disabled=false;
+}).catch(e=>{alert('Scan failed');btn.textContent='Scan for Networks';btn.disabled=false;});
+}
+</script>
 </body>
 </html>
 )rawliteral";
+
+static void HandleScan(void)
+{
+    if (!s_pServer) return;
+
+    WiFi.scanDelete();
+    int n = WiFi.scanNetworks(false, false, false, 300);
+
+    String json = "[";
+    for (int i = 0; i < n && i < 20; i++) {
+        if (i > 0) json += ",";
+        json += "{\"ssid\":\"";
+        String ssid = WiFi.SSID(i);
+        ssid.replace("\"", "\\\"");
+        json += ssid;
+        json += "\",\"rssi\":";
+        json += WiFi.RSSI(i);
+        json += "}";
+    }
+    json += "]";
+
+    WiFi.scanDelete();
+    s_pServer->send(200, "application/json", json);
+}
 
 static void HandleRoot(void)
 {
@@ -99,6 +152,10 @@ static void HandleSave(void)
     }
     if (s_pServer->hasArg("pool1_port")) {
         Config.PrimaryPool.Port = (uint16_t)s_pServer->arg("pool1_port").toInt();
+    }
+    if (s_pServer->hasArg("pool1_pass")) {
+        strncpy(Config.PrimaryPool.Password, s_pServer->arg("pool1_pass").c_str(), PDQ_MAX_PASSWORD_LEN);
+        Config.PrimaryPool.Password[PDQ_MAX_PASSWORD_LEN] = '\0';
     }
     if (s_pServer->hasArg("wallet")) {
         strncpy(Config.WalletAddress, s_pServer->arg("wallet").c_str(), PDQ_MAX_WALLET_LEN);
@@ -226,6 +283,7 @@ PdqError_t PdqWifiStartPortal(void)
     s_pDns->start(53, "*", WiFi.softAPIP());
     
     s_pServer->on("/", HandleRoot);
+    s_pServer->on("/scan", HTTP_GET, HandleScan);
     s_pServer->on("/save", HTTP_POST, HandleSave);
     s_pServer->onNotFound(HandleNotFound);
     s_pServer->begin();

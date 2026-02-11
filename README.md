@@ -23,7 +23,7 @@
   <img src="https://img.shields.io/badge/status-in%20development-orange" alt="Status"/>
   <img src="https://img.shields.io/badge/platform-ESP32-blue" alt="Platform"/>
   <img src="https://img.shields.io/badge/license-GPL--3.0-green" alt="License"/>
-  <img src="https://img.shields.io/badge/hashrate-≥1000%20KH%2Fs-brightgreen" alt="Hashrate"/>
+  <img src="https://img.shields.io/badge/hashrate-277%20MH%2Fs-brightgreen" alt="Hashrate"/>
 </p>
 
 ---
@@ -32,7 +32,7 @@
 
 PDQminer is a **fully open-source** Bitcoin mining ecosystem for ESP32 microcontrollers, consisting of:
 
-1. **PDQminer Firmware** - Maximum hashrate mining firmware (≥1000 KH/s)
+1. **PDQminer Firmware** - Maximum hashrate mining firmware (277 MH/s dual-core)
 2. **PDQFlasher** - Cross-platform firmware flashing tool with auto-detection
 3. **PDQManager** - Fleet management application for monitoring multiple miners
 
@@ -43,7 +43,7 @@ PDQminer is a **fully open-source** Bitcoin mining ecosystem for ESP32 microcont
 | Aspect | NerdMiner | NMMiner | PDQminer |
 |--------|-----------|---------|----------|
 | **Open Source** | ✅ Yes | ❌ Closed | ✅ 100% Open |
-| **Hashrate (ESP32-D0)** | ~55 KH/s | ~1000 KH/s | **≥1000 KH/s** |
+| **Hashrate (ESP32-D0)** | ~55 KH/s | ~1000 KH/s | **277 MH/s** |
 | **Configuration** | Captive Portal | Captive Portal | Captive Portal |
 | **Fleet Management** | ❌ No | ❌ No | ✅ **PDQManager** |
 | **Auto-Flash Tool** | ❌ No | ✅ Yes | ✅ **PDQFlasher** |

@@ -251,7 +251,7 @@ PdqError_t PdqSha256Midstate(const uint8_t* p_BlockHeader, uint8_t* p_Midstate) 
 }
 
 PDQ_IRAM_ATTR static bool CheckTarget(const uint32_t* p_Hash, const uint32_t* p_Target) {
-    for (int i = 7; i >= 0; i--) {
+    for (int i = 0; i < 8; i++) {
         if (p_Hash[i] > p_Target[i]) return false;
         if (p_Hash[i] < p_Target[i]) return true;
     }
@@ -352,7 +352,7 @@ PDQ_IRAM_ATTR PdqError_t PdqSha256MineBlock(const PdqMiningJob_t* p_Job, uint32_
     uint32_t W1Pre17 = SIG1(W1[15]) + W1[10] + SIG0(W1[2]) + W1[1];
     uint32_t W1Pre18Base = SIG1(W1Pre16) + W1[11] + W1[2];
 
-    uint32_t TargetHigh = p_Job->Target[7];
+    uint32_t TargetHigh = p_Job->Target[0];
 
     static const uint32_t W2_8 = 0x80000000;
     static const uint32_t W2_15 = 256;
@@ -408,7 +408,7 @@ PDQ_IRAM_ATTR PdqError_t PdqSha256MineBlock(const PdqMiningJob_t* p_Job, uint32_
 
         Sha256TransformW(FinalState, W2);
 
-        if (FinalState[7] <= TargetHigh) {
+        if (FinalState[0] <= TargetHigh) {
             if (CheckTarget(FinalState, p_Job->Target)) {
                 *p_Nonce = Nonce;
                 *p_Found = true;

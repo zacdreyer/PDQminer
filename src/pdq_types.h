@@ -67,7 +67,7 @@ typedef struct {
 #define PDQ_MAX_PASSWORD_LEN   64
 #define PDQ_MAX_HOST_LEN       64
 #define PDQ_MAX_WALLET_LEN     64
-#define PDQ_MAX_WORKER_LEN     32
+#define PDQ_MAX_WORKER_LEN     128
 
 typedef struct {
     char     Ssid[PDQ_MAX_SSID_LEN + 1];
@@ -77,6 +77,7 @@ typedef struct {
 typedef struct {
     char     Host[PDQ_MAX_HOST_LEN + 1];
     uint16_t Port;
+    char     Password[PDQ_MAX_PASSWORD_LEN + 1];
 } PdqPoolConfig_t;
 
 typedef struct {

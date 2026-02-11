@@ -40,7 +40,7 @@ PdqError_t PdqDisplayInit(PdqDisplayMode_t Mode)
     }
     
     s_Tft.init();
-    s_Tft.setRotation(1);
+    s_Tft.setRotation(3);
     s_Tft.fillScreen(COLOR_BG);
     
 #ifdef TFT_BL
@@ -173,7 +173,7 @@ static void DrawMiningStats(const PdqMinerStats_t* p_Stats)
     if (p_Stats->BlocksFound > 0) {
         s_Tft.setTextColor(COLOR_ACCENT, COLOR_BG);
         s_Tft.setCursor(10, Y + 5);
-        s_Tft.print("BLOCKS: ");
+        s_Tft.print("Blocks: ");
         s_Tft.setTextColor(TFT_GOLD, COLOR_BG);
         snprintf(Buffer, sizeof(Buffer), "%lu", (unsigned long)p_Stats->BlocksFound);
         s_Tft.print(Buffer);

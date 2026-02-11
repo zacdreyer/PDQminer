@@ -55,8 +55,10 @@ void setup() {
     }
 
     PdqConfigLoad(&s_Config);
+    Serial.println("[DBG] Config loaded"); Serial.flush();
 
     PdqWifiInit();
+    Serial.println("[DBG] WiFi init done"); Serial.flush();
     if (PdqWifiConnect(s_Config.Wifi.Ssid, s_Config.Wifi.Password) != PdqOk) {
         Serial.println("[PDQminer] WiFi failed, starting portal...");
         PdqWifiStartPortal();
@@ -66,16 +68,23 @@ void setup() {
     char Ip[16];
     PdqWifiGetIp(Ip, sizeof(Ip));
     Serial.printf("[PDQminer] WiFi connected, IP: %s\n", Ip);
+    Serial.flush();
 
 #ifndef PDQ_HEADLESS
     PdqDisplayShowMessage("PDQminer", "Connecting pool...");
 #endif
 
+    Serial.printf("[DBG] Connecting to %s:%d\n", s_Config.PrimaryPool.Host, s_Config.PrimaryPool.Port);
+    Serial.flush();
+
     PdqStratumInit();
+    Serial.println("[DBG] Stratum init done"); Serial.flush();
+
     if (PdqStratumConnect(s_Config.PrimaryPool.Host, s_Config.PrimaryPool.Port) != PdqOk) {
         Serial.println("[PDQminer] Pool connection failed");
         return;
     }
+    Serial.println("[DBG] Pool connected"); Serial.flush();
 
     PdqStratumSubscribe();
 
@@ -94,7 +103,10 @@ void setup() {
     char Worker[128];
     snprintf(Worker, sizeof(Worker), "%s.%s", s_Config.WalletAddress, s_Config.WorkerName);
     Worker[127] = '\0';
-    PdqStratumAuthorize(Worker, "x");
+    const char* PoolPass = s_Config.PrimaryPool.Password[0] ? s_Config.PrimaryPool.Password : "x";
+    Serial.printf("[DBG] Authorizing with worker: '%s', password: '%s'\n", Worker, PoolPass);
+    Serial.flush();
+    PdqStratumAuthorize(Worker, PoolPass);
 
     StartTime = millis();
     while (PdqStratumGetState() != StratumStateAuthorized &&
@@ -102,13 +114,17 @@ void setup() {
         PdqStratumProcess();
         if (millis() - StartTime > SETUP_TIMEOUT_MS) {
             Serial.println("[PDQminer] Authorize timeout");
+            Serial.printf("[DBG] State: %d\n", PdqStratumGetState());
             return;
         }
         delay(100);
     }
+    Serial.println("[DBG] Authorization OK");
 
     PdqMiningInit();
+    Serial.println("[DBG] Mining init done");
     PdqMiningStart();
+    Serial.println("[DBG] Mining start called");
 
     PdqApiInit();
     PdqApiStart();
@@ -127,27 +143,41 @@ void loop() {
     PdqApiProcess();
 
     if (PdqStratumHasNewJob()) {
+        Serial.println("[DBG] New job received!");
         PdqStratumGetJob(&s_StratumJob);
+
+        if (s_StratumJob.CleanJobs) {
+            Serial.println("[DBG] Clean jobs - clearing share queue");
+            PdqMiningClearShares();
+        }
 
         PdqMiningJob_t Job;
         s_Extranonce2++;
 
+        uint32_t Difficulty = PdqStratumGetDifficulty();
+        Serial.printf("[DBG] Using difficulty: %lu\n", Difficulty);
+
         PdqStratumBuildMiningJob(&s_StratumJob,
                                   s_Extranonce1, s_Extranonce1Len,
                                   s_Extranonce2, PdqStratumGetExtranonce2Size(),
-                                  PdqStratumGetDifficulty(),
+                                  Difficulty,
                                   &Job);
 
         Job.NonceStart = 0;
         Job.NonceEnd = 0xFFFFFFFF;
         PdqMiningSetJob(&Job);
+        Serial.println("[DBG] Job set for mining");
     }
 
-    while (PdqMiningHasShare()) {
-        PdqShareInfo_t Share;
-        if (PdqMiningGetShare(&Share) == PdqOk) {
-            PdqStratumSubmitShare(Share.JobId, Share.Extranonce2, Share.Nonce, Share.NTime);
-            Serial.printf("[PDQminer] Share submitted: nonce=%08X\n", Share.Nonce);
+    if (PdqStratumIsReady()) {
+        int SharesThisLoop = 0;
+        while (PdqMiningHasShare() && SharesThisLoop < 5) {
+            PdqShareInfo_t Share;
+            if (PdqMiningGetShare(&Share) == PdqOk) {
+                PdqStratumSubmitShare(Share.JobId, Share.Extranonce2, Share.Nonce, Share.NTime);
+                Serial.printf("[PDQminer] Share submitted: nonce=%08X\n", Share.Nonce);
+            }
+            SharesThisLoop++;
         }
     }
 

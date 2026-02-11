@@ -100,6 +100,7 @@ PDQ_IRAM_ATTR static void MiningTaskCore0(void* p_Param) {
             uint32_t Now = xTaskGetTickCount() * portTICK_PERIOD_MS;
             if (Now - LastWdtFeed > PDQ_WDT_FEED_INTERVAL) {
                 esp_task_wdt_reset();
+                vTaskDelay(1);
                 LastWdtFeed = Now;
             }
 
@@ -154,6 +155,7 @@ PDQ_IRAM_ATTR static void MiningTaskCore1(void* p_Param) {
             uint32_t Now = xTaskGetTickCount() * portTICK_PERIOD_MS;
             if (Now - LastWdtFeed > PDQ_WDT_FEED_INTERVAL) {
                 esp_task_wdt_reset();
+                vTaskDelay(1);
                 LastWdtFeed = Now;
             }
 
@@ -277,7 +279,7 @@ bool PdqMiningIsRunning(void) {
 
 bool PdqMiningHasShare(void) {
 #ifdef ESP_PLATFORM
-    return uxQueueMessagesWaiting(s_State.ShareQueue) > 0;
+    if (s_State.ShareQueue == NULL) return false; return uxQueueMessagesWaiting(s_State.ShareQueue) > 0;
 #else
     return s_State.ShareHead != s_State.ShareTail;
 #endif
@@ -286,7 +288,7 @@ bool PdqMiningHasShare(void) {
 PdqError_t PdqMiningGetShare(PdqShareInfo_t* p_Share) {
     if (p_Share == NULL) return PdqErrorInvalidParam;
 #ifdef ESP_PLATFORM
-    if (xQueueReceive(s_State.ShareQueue, p_Share, 0) == pdTRUE) {
+    if (s_State.ShareQueue == NULL) return PdqErrorInvalidParam; if (xQueueReceive(s_State.ShareQueue, p_Share, 0) == pdTRUE) {
         return PdqOk;
     }
     return PdqErrorInvalidParam;
@@ -295,5 +297,15 @@ PdqError_t PdqMiningGetShare(PdqShareInfo_t* p_Share) {
     *p_Share = s_State.ShareBuffer[s_State.ShareTail];
     s_State.ShareTail = (s_State.ShareTail + 1) % PDQ_SHARE_QUEUE_SIZE;
     return PdqOk;
+#endif
+}
+
+void PdqMiningClearShares(void) {
+#ifdef ESP_PLATFORM
+    if (s_State.ShareQueue != NULL) {
+        xQueueReset(s_State.ShareQueue);
+    }
+#else
+    s_State.ShareHead = s_State.ShareTail = 0;
 #endif
 }

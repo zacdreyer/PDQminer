@@ -68,6 +68,7 @@ void BenchmarkTask(void* p_Param) {
             }
             LocalHashes = 0;
             LastReport = Now;
+            vTaskDelay(1);
         }
 
         esp_task_wdt_reset();
@@ -77,6 +78,9 @@ void BenchmarkTask(void* p_Param) {
 void setup() {
     Serial.begin(115200);
     delay(1000);
+
+    esp_task_wdt_deinit();
+    esp_task_wdt_init(60, false);
 
     Serial.println("\n");
     Serial.println("╔═══════════════════════════════════════════════════════════╗");

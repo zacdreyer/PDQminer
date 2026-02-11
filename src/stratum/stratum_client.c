@@ -90,14 +90,16 @@ static void ReverseBytes(uint8_t* p_Data, size_t Len)
 static PdqError_t SendJson(const char* p_Json)
 {
     if (s_Ctx.Socket < 0) return PdqErrorNotConnected;
-    
+
+    printf("[STRATUM] TX: %s\n", p_Json);
+
     size_t Len = strlen(p_Json);
     ssize_t Sent = send(s_Ctx.Socket, p_Json, Len, 0);
     if (Sent != (ssize_t)Len) return PdqErrorTimeout;
-    
+
     Sent = send(s_Ctx.Socket, "\n", 1, 0);
     if (Sent != 1) return PdqErrorTimeout;
-    
+
     return PdqOk;
 }
 
@@ -214,7 +216,9 @@ static PdqError_t HandleSetDifficulty(const char* p_Json)
     if (p_Arr == NULL) return PdqErrorInvalidJob;
 
     double Diff = strtod(p_Arr + 1, NULL);
+    printf("[STRATUM] Pool requested difficulty: %f\n", Diff);
     s_Ctx.Difficulty = (uint32_t)(Diff > 0 ? Diff : 1);
+    printf("[STRATUM] Using difficulty: %lu\n", (unsigned long)s_Ctx.Difficulty);
     return PdqOk;
 }
 
@@ -230,7 +234,7 @@ static PdqError_t HandleNotify(const char* p_Json)
     char* p = p_Arr + 1;
     int Field = 0;
 
-    PdqStratumJob_t Job;
+    static PdqStratumJob_t Job;
     memset(&Job, 0, sizeof(Job));
 
     while (*p && Field < 9) {
@@ -319,17 +323,22 @@ static PdqError_t HandleNotify(const char* p_Json)
 
 static PdqError_t ProcessLine(const char* p_Line)
 {
+    printf("[STRATUM] RX: %s\n", p_Line);
     if (strstr(p_Line, "\"method\"")) {
         if (strstr(p_Line, "mining.set_difficulty")) {
+            printf("[STRATUM] Got set_difficulty\n");
             return HandleSetDifficulty(p_Line);
         } else if (strstr(p_Line, "mining.notify")) {
+            printf("[STRATUM] Got mining.notify!\n");
             return HandleNotify(p_Line);
         }
     } else if (strstr(p_Line, "\"id\"")) {
         int Id = FindJsonInt(p_Line, "id");
         if (Id == JSON_ID_SUBSCRIBE) {
+            printf("[STRATUM] Got subscribe result\n");
             return HandleSubscribeResult(p_Line);
         } else if (Id == JSON_ID_AUTHORIZE) {
+            printf("[STRATUM] Got authorize result\n");
             return HandleAuthorizeResult(p_Line);
         }
     }
@@ -354,14 +363,23 @@ PdqError_t PdqStratumConnect(const char* p_Host, uint16_t Port)
 
     s_Ctx.State = StratumStateConnecting;
 
-    struct hostent* p_Host_ent = gethostbyname(p_Host);
-    if (p_Host_ent == NULL) {
+    struct addrinfo hints, *res;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    char PortStr[8];
+    snprintf(PortStr, sizeof(PortStr), "%d", Port);
+
+    int err = getaddrinfo(p_Host, PortStr, &hints, &res);
+    if (err != 0 || res == NULL) {
         s_Ctx.State = StratumStateDisconnected;
         return PdqErrorNotConnected;
     }
 
-    s_Ctx.Socket = socket(AF_INET, SOCK_STREAM, 0);
+    s_Ctx.Socket = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (s_Ctx.Socket < 0) {
+        freeaddrinfo(res);
         s_Ctx.State = StratumStateDisconnected;
         return PdqErrorNotConnected;
     }
@@ -372,19 +390,15 @@ PdqError_t PdqStratumConnect(const char* p_Host, uint16_t Port)
     setsockopt(s_Ctx.Socket, SOL_SOCKET, SO_RCVTIMEO, &Timeout, sizeof(Timeout));
     setsockopt(s_Ctx.Socket, SOL_SOCKET, SO_SNDTIMEO, &Timeout, sizeof(Timeout));
 
-    struct sockaddr_in ServerAddr;
-    memset(&ServerAddr, 0, sizeof(ServerAddr));
-    ServerAddr.sin_family = AF_INET;
-    ServerAddr.sin_port = htons(Port);
-    memcpy(&ServerAddr.sin_addr.s_addr, p_Host_ent->h_addr, (size_t)p_Host_ent->h_length);
-
-    if (connect(s_Ctx.Socket, (struct sockaddr*)&ServerAddr, sizeof(ServerAddr)) < 0) {
+    if (connect(s_Ctx.Socket, res->ai_addr, res->ai_addrlen) < 0) {
         close(s_Ctx.Socket);
         s_Ctx.Socket = -1;
+        freeaddrinfo(res);
         s_Ctx.State = StratumStateDisconnected;
         return PdqErrorNotConnected;
     }
 
+    freeaddrinfo(res);
     s_Ctx.State = StratumStateConnected;
     return PdqOk;
 }
@@ -436,8 +450,11 @@ PdqError_t PdqStratumSubmitShare(const char* p_JobId, uint32_t Extranonce2, uint
     if (p_JobId == NULL) return PdqErrorInvalidParam;
 
     char Extranonce2Hex[17] = {0};
-    snprintf(Extranonce2Hex, sizeof(Extranonce2Hex), "%0*x",
-             (int)(s_Ctx.Extranonce2Size * 2), Extranonce2);
+    uint8_t Extranonce2Bytes[8];
+    for (int i = 0; i < (int)s_Ctx.Extranonce2Size; i++) {
+        Extranonce2Bytes[i] = (uint8_t)(Extranonce2 >> (i * 8));
+    }
+    BytesToHex(Extranonce2Bytes, s_Ctx.Extranonce2Size, Extranonce2Hex);
 
     s_Ctx.SubmitId++;
     snprintf(s_Ctx.SendBuffer, sizeof(s_Ctx.SendBuffer),
@@ -539,12 +556,15 @@ uint8_t PdqStratumGetExtranonce2Size(void)
 
 static void DifficultyToTarget(uint32_t Difficulty, uint32_t* p_Target)
 {
-    memset(p_Target, 0, 32);
     if (Difficulty == 0) Difficulty = 1;
 
-    uint64_t Target = 0x00000000FFFF0000ULL / (uint64_t)Difficulty;
-    p_Target[6] = (uint32_t)(Target >> 32);
-    p_Target[7] = (uint32_t)(Target & 0xFFFFFFFF);
+    memset(p_Target, 0xFF, 32);
+
+    uint64_t Base = 0x0000FFFF00000000ULL;
+    uint64_t TargetVal = Base / (uint64_t)Difficulty;
+
+    p_Target[0] = (uint32_t)(TargetVal >> 32);
+    p_Target[1] = (uint32_t)(TargetVal & 0xFFFFFFFF);
 }
 
 PdqError_t PdqStratumBuildMiningJob(const PdqStratumJob_t* p_StratumJob,
@@ -557,7 +577,7 @@ PdqError_t PdqStratumBuildMiningJob(const PdqStratumJob_t* p_StratumJob,
 
     memset(p_MiningJob, 0, sizeof(PdqMiningJob_t));
 
-    uint8_t Coinbase[512];
+    uint8_t Coinbase[600];
     size_t CoinbaseLen = 0;
 
     memcpy(Coinbase + CoinbaseLen, p_StratumJob->Coinbase1, p_StratumJob->Coinbase1Len);
@@ -568,7 +588,7 @@ PdqError_t PdqStratumBuildMiningJob(const PdqStratumJob_t* p_StratumJob,
         CoinbaseLen += Extranonce1Len;
     }
 
-    for (int i = Extranonce2Len - 1; i >= 0; i--) {
+    for (int i = 0; i < Extranonce2Len; i++) {
         Coinbase[CoinbaseLen++] = (uint8_t)(Extranonce2 >> (i * 8));
     }
 
