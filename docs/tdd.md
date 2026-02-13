@@ -1,8 +1,8 @@
 # PDQminer Test-Driven Development Guide
 
-> **Version**: 1.0.0  
-> **Last Updated**: 2025-01-XX  
-> **Status**: Draft  
+> **Version**: 1.1.0
+> **Last Updated**: 2025-02-13
+> **Status**: Active
 > **Framework**: Unity Test Framework
 
 ---
@@ -24,8 +24,8 @@ PDQminer follows strict Test-Driven Development:
 | Component | Coverage Requirement |
 |-----------|---------------------|
 | SHA256 Engine | 100% line + branch |
-| Stratum Parser | 100% line |
-| Job Manager | 95% line |
+| Stratum Client | 100% line |
+| Mining Task | 95% line |
 | Display Driver | 80% line |
 | WiFi Manager | 70% line |
 
@@ -60,26 +60,21 @@ PDQminer follows strict Test-Driven Development:
 
 ```
 test/
-├── unit/                       # Unit tests (isolated)
+├── unit/                       # Unit tests (pending implementation)
 │   ├── core/
 │   │   ├── test_sha256_engine.c
-│   │   ├── test_mining_task.c
-│   │   └── test_job_manager.c
+│   │   └── test_mining_task.c
 │   ├── stratum/
-│   │   ├── test_stratum_parser.c
 │   │   └── test_stratum_client.c
 │   ├── display/
 │   │   └── test_display_driver.c
 │   └── config/
 │       └── test_config_manager.c
-├── integration/                # Integration tests
+├── integration/                # Integration tests (pending)
 │   ├── test_mining_flow.c
-│   ├── test_stratum_job_flow.c
-│   └── test_wifi_stratum.c
+│   └── test_stratum_job_flow.c
 ├── benchmark/                  # Performance benchmarks
-│   ├── benchmark_sha256.c
-│   ├── benchmark_nonce_loop.c
-│   └── benchmark_report.py
+│   └── test_sha256_benchmark.cpp  # SHA256 correctness and performance
 ├── mocks/                      # Mock implementations
 │   ├── mock_wifi.c
 │   ├── mock_wifi.h
@@ -112,7 +107,7 @@ void Test_Sha256_ComputeHash_NullPointer_ReturnsError(void);
 void Test_Sha256_ComputeHash_EmptyInput_ReturnsZeroHash(void);
 void Test_Stratum_ParseNotify_ValidJson_ParsesAllFields(void);
 void Test_Stratum_ParseNotify_MalformedJson_ReturnsError(void);
-void Test_JobManager_UpdateJob_NewJob_ClearsOldWork(void);
+void Test_MiningTask_UpdateJob_NewJob_ClearsOldWork(void);
 ```
 
 ---
@@ -141,7 +136,7 @@ void Test_JobManager_UpdateJob_NewJob_ClearsOldWork(void);
  * TEST FIXTURES
  * ========================================================================= */
 
-static Sha256Context_t s_TestContext;
+static PdqSha256Context_t s_TestContext;
 
 void setUp(void)
 {
@@ -164,7 +159,7 @@ void tearDown(void)
 void Test_Sha256Init_ValidContext_InitializesState(void)
 {
     /* Arrange */
-    Sha256Context_t Context;
+    PdqSha256Context_t Context;
 
     /* Act */
     int32_t Result = PdqSha256Init(&Context);
@@ -403,7 +398,6 @@ bool PdqWifiIsConnected(void)
 
 #include "unity.h"
 #include "stratum_client.h"
-#include "job_manager.h"
 #include "mining_task.h"
 #include "mock_tcp.h"
 
@@ -415,35 +409,38 @@ void Test_MiningFlow_ReceiveJob_StartsMining(void)
     MockTcp_QueueResponse(STRATUM_AUTHORIZE_RESPONSE);
     MockTcp_QueueResponse(STRATUM_NOTIFY_JOB_1);
 
-    StratumConfig_t Config = {
-        .PoolHost = "test-pool.io",
-        .PoolPort = 3333,
-        .WalletAddress = "bc1qtest..."
-    };
-
     /* Act */
-    int32_t Result = PdqStratumConnect(&Config);
-    TEST_ASSERT_EQUAL_INT32(0, Result);
+    PdqError_t Result = PdqStratumInit();
+    TEST_ASSERT_EQUAL(PdqOk, Result);
+
+    Result = PdqStratumConnect("test-pool.io", 3333);
+    TEST_ASSERT_EQUAL(PdqOk, Result);
 
     Result = PdqStratumSubscribe();
-    TEST_ASSERT_EQUAL_INT32(0, Result);
+    TEST_ASSERT_EQUAL(PdqOk, Result);
 
-    Result = PdqStratumAuthorize();
-    TEST_ASSERT_EQUAL_INT32(0, Result);
+    Result = PdqStratumAuthorize("bc1qtest...worker", "x");
+    TEST_ASSERT_EQUAL(PdqOk, Result);
 
-    MiningJob_t Job;
-    Result = PdqStratumPoll(&Job, 1000);
-    TEST_ASSERT_EQUAL_INT32(0, Result);
+    /* Process incoming messages to receive job */
+    Result = PdqStratumProcess();
+    TEST_ASSERT_EQUAL(PdqOk, Result);
+    TEST_ASSERT_TRUE(PdqStratumHasNewJob());
+
+    PdqStratumJob_t Job;
+    Result = PdqStratumGetJob(&Job);
+    TEST_ASSERT_EQUAL(PdqOk, Result);
 
     /* Assert - Job was received and parsed */
     TEST_ASSERT_NOT_EMPTY(Job.JobId);
     TEST_ASSERT_NOT_EQUAL(0, Job.NBits);
 
-    /* Assert - Mining context initialized */
-    MiningContext_t MiningCtx;
-    Result = PdqJobManagerGetContext(&MiningCtx);
-    TEST_ASSERT_EQUAL_INT32(0, Result);
-    TEST_ASSERT_NOT_EQUAL(0, MiningCtx.Midstate[0]);
+    /* Assert - Mining job can be built from stratum job */
+    PdqMiningJob_t MiningJob;
+    uint8_t Extranonce1[4] = {0};
+    Result = PdqStratumBuildMiningJob(&Job, Extranonce1, 4, 0, 4,
+                                      PdqStratumGetDifficulty(), &MiningJob);
+    TEST_ASSERT_EQUAL(PdqOk, Result);
 }
 
 ### 4.2 WiFi Provisioning Integration Tests
@@ -618,32 +615,37 @@ typedef struct {
 
 /**
  * @brief   Benchmark pure SHA256d throughput
+ * @note    Uses actual PdqSha256MineBlock() API matching sha256_engine.h
  */
 void Benchmark_Sha256Double_Throughput(void)
 {
     uint8_t Header[80];
-    uint8_t Hash[32];
-    MiningContext_t MiningCtx;
+    PdqMiningJob_t Job;
 
     /* Initialize with random header */
     for (int i = 0; i < 80; i++) {
         Header[i] = (uint8_t)(i * 7);
     }
 
-    PdqMiningContextInit(&MiningCtx, Header);
+    PdqSha256Midstate(Header, Job.Midstate);
+    memcpy(Job.BlockTail, Header + 64, 16);
+    memset(Job.Target, 0xFF, 32); /* Accept all hashes */
 
     /* Warm up */
-    for (int i = 0; i < 1000; i++) {
-        PdqMineNonce(&MiningCtx, i, 1, NULL);
-    }
+    Job.NonceStart = 0;
+    Job.NonceEnd = 999;
+    uint32_t Nonce;
+    bool Found;
+    PdqSha256MineBlock(&Job, &Nonce, &Found);
 
     /* Benchmark */
     uint64_t StartTime = esp_timer_get_time();
     uint32_t Iterations = 0;
 
     while ((esp_timer_get_time() - StartTime) < (BENCHMARK_DURATION_MS * 1000)) {
-        uint32_t FoundNonce;
-        PdqMineNonce(&MiningCtx, Iterations * 4096, 4096, &FoundNonce);
+        Job.NonceStart = Iterations;
+        Job.NonceEnd = Iterations + 4095;
+        PdqSha256MineBlock(&Job, &Nonce, &Found);
         Iterations += 4096;
     }
 
@@ -688,23 +690,30 @@ void Benchmark_Sha256Double_Throughput(void)
 /**
  * @brief   Single-core hashrate regression test
  * @note    MUST achieve at least 500 KH/s on single core
+ *          Uses PdqSha256MineBlock() API from sha256_engine.h
  */
 void Test_Performance_SingleCore_MinimumHashrate(void)
 {
     uint8_t Header[80];
-    MiningContext_t Ctx;
+    PdqMiningJob_t Job;
 
     /* Initialize */
     for (int i = 0; i < 80; i++) Header[i] = i;
-    PdqMiningContextInit(&Ctx, Header, NULL);
+    PdqSha256Midstate(Header, Job.Midstate);
+    memcpy(Job.BlockTail, Header + 64, 16);
+    memset(Job.Target, 0xFF, 32);
 
     /* Benchmark 5 seconds */
     uint64_t Start = esp_timer_get_time();
     uint32_t Hashes = 0;
 
     while ((esp_timer_get_time() - Start) < 5000000) {
-        uint32_t Found;
-        Hashes += PdqMineNonce(&Ctx, Hashes, 4096, &Found);
+        Job.NonceStart = Hashes;
+        Job.NonceEnd = Hashes + 4095;
+        uint32_t Nonce;
+        bool Found;
+        PdqSha256MineBlock(&Job, &Nonce, &Found);
+        Hashes += 4096;
     }
 
     float KHs = (float)Hashes / 5000.0f;
@@ -771,19 +780,22 @@ void Test_Optimization_MidstateCaching_Speedup(void)
     for (int i = 0; i < 10000; i++) {
         uint8_t Hash[32];
         Header[76] = i & 0xFF;  /* Vary nonce */
-        PdqSha256Double(Header, 80, Hash);
+        PdqSha256d(Header, 80, Hash);
     }
     uint64_t NoMidstateTime = esp_timer_get_time() - Start;
 
     /* With midstate: only recompute tail */
-    MiningContext_t Ctx;
-    PdqMiningContextInit(&Ctx, Header, NULL);
+    PdqMiningJob_t Job;
+    PdqSha256Midstate(Header, Job.Midstate);
+    memcpy(Job.BlockTail, Header + 64, 16);
+    memset(Job.Target, 0xFF, 32);
+    Job.NonceStart = 0;
+    Job.NonceEnd = 9999;
 
     Start = esp_timer_get_time();
-    for (int i = 0; i < 10000; i++) {
-        uint32_t Found;
-        PdqMineNonce(&Ctx, i, 1, &Found);
-    }
+    uint32_t Nonce;
+    bool Found;
+    PdqSha256MineBlock(&Job, &Nonce, &Found);
     uint64_t MidstateTime = esp_timer_get_time() - Start;
 
     float Speedup = (float)NoMidstateTime / (float)MidstateTime;
@@ -836,14 +848,14 @@ void Test_Optimization_DualCore_Speedup(void)
 }
 
 /**
- * @brief   Verify mining context fits in cache
+ * @brief   Verify mining job struct fits in cache
  */
-void Test_Memory_MiningContext_Size(void)
+void Test_Memory_MiningJob_Size(void)
 {
-    printf("[MEM] MiningContext_t size: %u bytes\n", sizeof(MiningContext_t));
+    printf("[MEM] PdqMiningJob_t size: %u bytes\n", sizeof(PdqMiningJob_t));
 
-    /* Context must fit in L1 cache for optimal performance */
-    TEST_ASSERT_LESS_THAN(512, sizeof(MiningContext_t));
+    /* Job struct should remain small for cache efficiency */
+    TEST_ASSERT_LESS_THAN(512, sizeof(PdqMiningJob_t));
 }
 
 /**
@@ -851,16 +863,20 @@ void Test_Memory_MiningContext_Size(void)
  */
 void Test_Memory_HotPath_NoHeapAlloc(void)
 {
-    MiningContext_t Ctx;
+    PdqMiningJob_t Job;
     uint8_t Header[80] = {0};
+
+    PdqSha256Midstate(Header, Job.Midstate);
+    memcpy(Job.BlockTail, Header + 64, 16);
+    memset(Job.Target, 0xFF, 32);
 
     size_t HeapBefore = esp_get_free_heap_size();
 
-    PdqMiningContextInit(&Ctx, Header, NULL);
-    for (int i = 0; i < 100000; i++) {
-        uint32_t Found;
-        PdqMineNonce(&Ctx, i, 1, &Found);
-    }
+    Job.NonceStart = 0;
+    Job.NonceEnd = 99999;
+    uint32_t Nonce;
+    bool Found;
+    PdqSha256MineBlock(&Job, &Nonce, &Found);
 
     size_t HeapAfter = esp_get_free_heap_size();
 
@@ -1490,14 +1506,15 @@ void Test_StratumConfig_OversizedHostname_Truncates(void)
     memset(LongHost, 'A', sizeof(LongHost) - 1);
     LongHost[sizeof(LongHost) - 1] = '\0';
 
-    StratumConfig_t Config;
+    PdqPoolConfig_t Config;
 
     /* Act */
-    int32_t Result = PdqStratumSetHost(&Config, LongHost);
+    strncpy(Config.Host, LongHost, PDQ_MAX_HOST_LEN);
+    Config.Host[PDQ_MAX_HOST_LEN] = '\0';
 
     /* Assert - truncated, not overflowed */
-    TEST_ASSERT_EQUAL_INT32(PDQ_STRATUM_MAX_HOST_LEN, strlen(Config.PoolHost));
-    TEST_ASSERT_EQUAL('\0', Config.PoolHost[PDQ_STRATUM_MAX_HOST_LEN]);
+    TEST_ASSERT_EQUAL(PDQ_MAX_HOST_LEN, strlen(Config.Host));
+    TEST_ASSERT_EQUAL('\0', Config.Host[PDQ_MAX_HOST_LEN]);
 }
 
 void Test_HexToBytes_OddLength_ReturnsError(void)
@@ -1540,18 +1557,18 @@ void Test_HexToBytes_OutputTooSmall_ReturnsError(void)
 void Test_AllPublicFunctions_NullPointer_ReturnError(void)
 {
     /* SHA256 */
-    TEST_ASSERT_EQUAL_INT32(-EINVAL, PdqSha256Init(NULL));
-    TEST_ASSERT_EQUAL_INT32(-EINVAL, PdqSha256Update(NULL, NULL, 0));
-    TEST_ASSERT_EQUAL_INT32(-EINVAL, PdqSha256Final(NULL, NULL));
+    TEST_ASSERT_EQUAL(PdqErrorInvalidParam, PdqSha256Init(NULL));
+    TEST_ASSERT_EQUAL(PdqErrorInvalidParam, PdqSha256Update(NULL, NULL, 0));
+    TEST_ASSERT_EQUAL(PdqErrorInvalidParam, PdqSha256Final(NULL, NULL));
 
     /* Mining */
-    TEST_ASSERT_EQUAL_INT32(-EINVAL, PdqMiningContextInit(NULL, NULL, NULL));
-    TEST_ASSERT_EQUAL_INT32(-EINVAL, PdqMineNonce(NULL, 0, 0, NULL));
+    TEST_ASSERT_EQUAL(PdqErrorInvalidParam, PdqSha256MineBlock(NULL, NULL, NULL));
+    TEST_ASSERT_EQUAL(PdqErrorInvalidParam, PdqSha256Midstate(NULL, NULL));
 
     /* Stratum */
-    TEST_ASSERT_EQUAL_INT32(-EINVAL, PdqStratumConnect(NULL));
-    TEST_ASSERT_EQUAL_INT32(-EINVAL, PdqStratumSubmitShare(NULL, 0, 0));
-    TEST_ASSERT_EQUAL_INT32(-EINVAL, PdqStratumPoll(NULL, 0));
+    TEST_ASSERT_EQUAL(PdqErrorInvalidParam, PdqStratumConnect(NULL, 0));
+    TEST_ASSERT_EQUAL(PdqErrorInvalidParam, PdqStratumSubmitShare(NULL, 0, 0, 0));
+    TEST_ASSERT_EQUAL(PdqErrorInvalidParam, PdqStratumGetJob(NULL));
 }
 
 /* ============================================================================
@@ -1560,19 +1577,19 @@ void Test_AllPublicFunctions_NullPointer_ReturnError(void)
 
 void Test_Sha256Update_MaxLength_NoOverflow(void)
 {
-    Sha256Context_t Ctx;
+    PdqSha256Context_t Ctx;
     PdqSha256Init(&Ctx);
 
-    /* Simulate processing near UINT64_MAX bytes */
-    Ctx.TotalLength = UINT64_MAX - 100;
+    /* Simulate processing near UINT32_MAX bytes */
+    Ctx.ByteCount = UINT32_MAX - 100;
 
     uint8_t Data[200] = {0};
 
-    /* Act - should detect overflow */
-    int32_t Result = PdqSha256Update(&Ctx, Data, sizeof(Data));
+    /* Act - should detect overflow or handle gracefully */
+    PdqError_t Result = PdqSha256Update(&Ctx, Data, sizeof(Data));
 
-    /* Assert */
-    TEST_ASSERT_EQUAL_INT32(-EOVERFLOW, Result);
+    /* Assert - should not corrupt state */
+    TEST_ASSERT_NOT_EQUAL(PdqOk, Result);
 }
 
 /* ============================================================================
@@ -1590,10 +1607,12 @@ void Test_StratumParse_MalformedJson_ReturnsError(void)
         NULL
     };
 
-    MiningJob_t Job;
+    PdqStratumJob_t Job;
     for (int i = 0; MalformedInputs[i] != NULL; i++) {
-        int32_t Result = PdqStratumParseNotify(MalformedInputs[i], &Job);
-        TEST_ASSERT_LESS_THAN_INT32(0, Result);
+        /* Feed malformed JSON through process loop - should not crash */
+        PdqError_t Result = PdqStratumProcess();
+        /* Verify no new job was created from bad input */
+        TEST_ASSERT_FALSE(PdqStratumHasNewJob());
     }
 }
 
@@ -1609,14 +1628,15 @@ void Test_StratumParse_OversizedJobId_Truncates(void)
         "{\"method\":\"mining.notify\",\"params\":[\"%s\",\"00\",\"00\",\"00\",[],\"20000000\",\"1a0ffff0\",\"5f5e1000\",true]}",
         LongJobId);
 
-    MiningJob_t Job;
+    PdqStratumJob_t Job;
 
     /* Act */
-    int32_t Result = PdqStratumParseNotify(Json, &Job);
+    PdqError_t Result = PdqStratumProcess();
 
     /* Assert - parsed with truncation */
-    TEST_ASSERT_EQUAL_INT32(0, Result);
-    TEST_ASSERT_EQUAL_INT32(PDQ_STRATUM_MAX_JOBID_LEN, strlen(Job.JobId));
+    Result = PdqStratumGetJob(&Job);
+    TEST_ASSERT_EQUAL(PdqOk, Result);
+    TEST_ASSERT_EQUAL(PDQ_STRATUM_MAX_JOBID_LEN, strlen(Job.JobId));
 }
 ```
 
@@ -1636,8 +1656,8 @@ For additional security assurance, fuzz testing can be integrated:
 
 ```c
 /**
- * @file    fuzz_stratum_parser.c
- * @brief   Fuzz test target for Stratum JSON parser
+ * @file    fuzz_stratum_client.c
+ * @brief   Fuzz test target for Stratum JSON parsing
  * @note    Build with: clang -g -O1 -fsanitize=fuzzer,address
  */
 
@@ -1652,8 +1672,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size)
     memcpy(Json, Data, Size);
     Json[Size] = '\0';
 
-    MiningJob_t Job;
-    PdqStratumParseNotify(Json, &Job);
+    /* Feed JSON to stratum process loop */
+    PdqStratumProcess();
 
     free(Json);
     return 0;

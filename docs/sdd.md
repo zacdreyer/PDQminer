@@ -1,8 +1,8 @@
 # PDQminer Software Design Document (SDD)
 
-> **Version**: 1.0.0  
-> **Last Updated**: 2025-01-XX  
-> **Status**: Draft  
+> **Version**: 1.1.0
+> **Last Updated**: 2025-02-13
+> **Status**: Active
 > **Owner**: PDQminer Team
 
 ---
@@ -111,92 +111,55 @@ Analysis of Project Kilo's performance progression reveals optimization strategy
 ```
 PDQminer/
 ├── docs/                       # Documentation
-│   ├── agent-memory.md
+│   ├── agents/
+│   │   ├── agent-memory.md     # Agent context persistence
+│   │   └── agent-prompts.md    # Common prompts for agents
+│   ├── assets/
+│   │   └── logo-pdqminer.png   # Project logo
 │   ├── coding-standards.md
 │   ├── documentation-standards.md
 │   ├── sdd.md
-│   ├── tdd.md
-│   ├── api/
-│   ├── architecture/
-│   │   └── adr/
-│   └── specs/
-├── firmware/                   # ESP32 Firmware Source
-│   ├── src/                    # Source code
-│   │   ├── main.c              # Entry point
-│   │   ├── core/               # Core mining logic
-│   │   │   ├── sha256_engine.c
-│   │   │   ├── sha256_engine.h
-│   │   │   ├── mining_task.c
-│   │   │   ├── mining_task.h
-│   │   │   ├── job_manager.c
-│   │   │   └── job_manager.h
-│   │   ├── stratum/            # Pool communication
-│   │   │   ├── stratum_client.c
-│   │   │   ├── stratum_client.h
-│   │   │   ├── stratum_parser.c
-│   │   │   └── stratum_parser.h
-│   │   ├── network/            # WiFi and network
-│   │   │   ├── wifi_manager.c
-│   │   │   ├── wifi_manager.h
-│   │   │   └── network_utils.c
-│   │   ├── display/            # Display abstraction
-│   │   │   ├── display_driver.c
-│   │   │   ├── display_driver.h
-│   │   │   ├── screens/
-│   │   │   │   ├── screen_mining.c
-│   │   │   │   ├── screen_clock.c
-│   │   │   │   └── screen_stats.c
-│   │   │   └── drivers/
-│   │   │       ├── ili9341.c
-│   │   │       └── st7789.c
-│   │   ├── config/             # Configuration management
-│   │   │   ├── config_manager.c
-│   │   │   ├── config_manager.h
-│   │   │   └── nvs_storage.c
-│   │   └── hal/                # Hardware abstraction
-│   │       ├── board_config.h
-│   │       └── gpio_config.c
-│   ├── test/                   # Unit and integration tests
-│   │   ├── unit/
-│   │   │   ├── test_sha256.c
-│   │   │   ├── test_stratum_parser.c
-│   │   │   └── test_job_manager.c
-│   │   ├── integration/
-│   │   │   └── test_mining_flow.c
-│   │   └── benchmark/
-│   │       └── benchmark_sha256.c
-│   ├── boards/                 # Board-specific configurations
-│   │   ├── esp32_2432s028_ili9341/
-│   │   │   └── board_config.h
-│   │   └── esp32_2432s028_st7789/
-│   │       └── board_config.h
-│   ├── platformio.ini          # PlatformIO configuration
-│   └── CMakeLists.txt          # ESP-IDF build support
-├── tools/                      # Firmware Patcher Tools
-│   ├── web-flasher/            # Browser-based flasher (ESP Web Tools)
-│   │   ├── index.html          # Main flasher page
-│   │   ├── manifest.json       # ESP Web Tools manifest
-│   │   ├── css/
-│   │   │   └── style.css
-│   │   ├── js/
-│   │   │   └── flasher.js
-│   │   └── firmware/           # Pre-built binaries (gitignored, CI populated)
-│   │       ├── pdqminer_cyd_ili9341.bin
-│   │       └── pdqminer_cyd_st7789.bin
-│   └── python-flasher/         # Cross-platform Python CLI flasher
-│       ├── pdqflash.py         # Main CLI entry point
-│       ├── requirements.txt    # Python dependencies (esptool, etc.)
-│       ├── pdqflash/           # Package module
-│       │   ├── __init__.py
-│       │   ├── flasher.py      # Flashing logic
-│       │   ├── detector.py     # Board/chip detection
-│       │   └── config.py       # Flash configurations
-│       └── tests/              # Python flasher tests
-│           ├── test_flasher.py
-│           └── test_detector.py
+│   └── tdd.md
+├── src/                        # Firmware Source (flat, no firmware/ wrapper)
+│   ├── main.cpp                # Application entry point (Arduino framework)
+│   ├── main_benchmark.cpp      # Standalone benchmark firmware
+│   ├── pdq_types.h             # Common type definitions
+│   ├── core/                   # Core mining logic
+│   │   ├── sha256_engine.c
+│   │   ├── sha256_engine.h
+│   │   ├── mining_task.c
+│   │   └── mining_task.h
+│   ├── stratum/                # Pool communication
+│   │   ├── stratum_client.c
+│   │   └── stratum_client.h
+│   ├── network/                # WiFi and network
+│   │   ├── wifi_manager.cpp    # C++ for Arduino WebServer/IotWebConf
+│   │   └── wifi_manager.h
+│   ├── display/                # Display driver (TFT_eSPI)
+│   │   ├── display_driver.cpp  # C++ for TFT_eSPI library
+│   │   └── display_driver.h
+│   ├── config/                 # Configuration management
+│   │   ├── config_manager.c
+│   │   └── config_manager.h
+│   ├── api/                    # Device REST API (stub)
+│   │   ├── device_api.c
+│   │   └── device_api.h
+│   └── hal/                    # Hardware abstraction
+│       ├── board_hal.c
+│       └── board_hal.h
+├── test/                       # Test suite
+│   ├── unit/                   # Unit tests (pending)
+│   ├── integration/            # Integration tests (pending)
+│   └── benchmark/
+│       └── test_sha256_benchmark.cpp
+├── boards/                     # Board-specific configs (placeholder)
+├── tools/                      # Build utilities (placeholder)
+│   ├── pdqflasher/
+│   └── pdqmanager/
+├── platformio.ini              # PlatformIO configuration
+├── serial_monitor.py           # Serial monitoring helper
 ├── LICENSE
-├── README.md
-└── CHANGELOG.md
+└── README.md
 ```
 
 ### 3.2 Component Diagram
@@ -280,9 +243,15 @@ PDQminer/
 
 6. **Compiler Optimization Settings**
    - `-O3` optimization level for release builds
-   - `-ffast-math` NOT used (integer only code)
-   - `-flto` for link-time optimization
    - `-funroll-loops` combined with manual unrolling
+   - `-fomit-frame-pointer` to free a register
+   - `-finline-functions` with `-finline-limit=10000` for aggressive inlining
+   - `-fno-strict-aliasing` for safe type punning
+   - `-ftree-vectorize` for auto-vectorization where possible
+   - `-ffunction-sections` / `-fdata-sections` for dead code elimination
+   - `-mtext-section-literals` for Xtensa literal pool optimization
+   - `-ffast-math` enabled (integer-only hot path unaffected)
+   - `-flto` NOT currently used (planned for future)
 
 7. **Branch Elimination**
    - No conditional branches in SHA256 rounds (constant-time)
@@ -304,36 +273,37 @@ PDQminer/
 ```c
 /**
  * @brief SHA256 computation context
- * @note  Aligned to 4-byte boundary for ESP32 word access
+ * @note  Fields match pdq_types.h PdqSha256Context_t
  */
-typedef struct __attribute__((aligned(4))) {
+typedef struct {
     uint32_t State[8];              /**< SHA256 state (H0-H7) */
     uint8_t  Buffer[64];            /**< Input buffer for partial blocks */
-    uint32_t BufferLength;          /**< Current buffer fill level (0-63) */
-    uint64_t TotalLength;           /**< Total bytes processed */
-} Sha256Context_t;
+    uint32_t ByteCount;             /**< Total bytes processed */
+} PdqSha256Context_t;
 
 /**
- * @brief Mining-optimized context for nonce iteration
- * @note  Placed in DRAM for fast access from both cores
- * @warning Must be initialized before use; never share between cores
+ * @brief Mining job context for nonce iteration
+ * @note  Aligned to 4-byte boundary for ESP32 word access
+ * @note  Passed to PdqSha256MineBlock() for optimized mining
  */
 typedef struct __attribute__((aligned(4))) {
-    uint32_t Midstate[8];           /**< Precomputed state after first 64 bytes */
-    uint32_t TailWords[16];         /**< Last 64 bytes as 32-bit words (big-endian) */
+    uint8_t  Midstate[32];          /**< Precomputed state after first 64 bytes */
+    uint8_t  BlockTail[64];         /**< Last 64 bytes with SHA256 padding */
+    uint32_t NonceStart;            /**< First nonce to test */
+    uint32_t NonceEnd;              /**< Last nonce to test */
     uint32_t Target[8];             /**< Difficulty target for comparison */
-    uint32_t NonceWordIndex;        /**< Index of nonce in TailWords (typically 3) */
-    volatile uint32_t CurrentNonce; /**< Current nonce being tested */
-    volatile bool     ShareFound;   /**< Flag: valid share found */
-} MiningContext_t;
+    char     JobId[65];             /**< Stratum job ID (string) */
+    uint32_t Extranonce2;           /**< Extranonce2 value used */
+    uint32_t NTime;                 /**< Block timestamp */
+} PdqMiningJob_t;
 
 /**
  * @brief SHA256 round constants
  * @note  Placed in DRAM (not flash) for faster access
  */
-static const uint32_t DRAM_ATTR g_Sha256K[64] = {
-    0x428A2F98, 0x71374491, 0xB5C0FBCF, 0xE9B5DBA5,
-    0x3956C25B, 0x59F111F1, 0x923F82A4, 0xAB1C5ED5,
+static PDQ_DRAM_ATTR const uint32_t K[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+    0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     /* ... remaining 56 constants ... */
 };
 ```
@@ -344,56 +314,46 @@ static const uint32_t DRAM_ATTR g_Sha256K[64] = {
 /**
  * @brief Initialize SHA256 context
  * @param[out] p_Ctx  Pointer to context (must not be NULL)
- * @return 0 on success, negative error code on failure
- * @note  Not performance-critical; can remain in flash
+ * @return PdqOk on success, PdqErrorInvalidParam on NULL
  */
-int32_t PdqSha256Init(Sha256Context_t *p_Ctx);
+PdqError_t PdqSha256Init(PdqSha256Context_t *p_Ctx);
 
 /**
  * @brief Process data into SHA256 context
  * @param[in,out] p_Ctx   Context pointer (must not be NULL)
  * @param[in]     p_Data  Input data (must not be NULL if Length > 0)
  * @param[in]     Length  Data length in bytes
- * @return 0 on success, negative error code on failure
- * @note  Validates all pointers before dereferencing
+ * @return PdqOk on success, PdqErrorInvalidParam on invalid args
  */
-int32_t PdqSha256Update(Sha256Context_t *p_Ctx, const uint8_t *p_Data, uint32_t Length);
+PdqError_t PdqSha256Update(PdqSha256Context_t *p_Ctx, const uint8_t *p_Data, size_t Length);
 
 /**
  * @brief Finalize SHA256 and output hash
  * @param[in,out] p_Ctx  Context pointer (must not be NULL)
  * @param[out]    p_Hash Output buffer (must be at least 32 bytes)
- * @return 0 on success, negative error code on failure
- * @note  Context is invalidated after this call
+ * @return PdqOk on success, PdqErrorInvalidParam on invalid args
  */
-int32_t PdqSha256Final(Sha256Context_t *p_Ctx, uint8_t *p_Hash);
+PdqError_t PdqSha256Final(PdqSha256Context_t *p_Ctx, uint8_t *p_Hash);
 
 /**
- * @brief Initialize mining context from 80-byte block header
- * @param[out] p_Ctx    Mining context (must not be NULL)
- * @param[in]  p_Header 80-byte block header (must not be NULL)
- * @param[in]  p_Target 32-byte difficulty target (must not be NULL)
- * @return 0 on success, negative error code on failure
- * @note  Computes and caches midstate for subsequent nonce iteration
+ * @brief Compute midstate from first 64 bytes of block header
+ * @param[in]  p_BlockHeader 80-byte block header (must not be NULL)
+ * @param[out] p_Midstate    32-byte output buffer (must not be NULL)
+ * @return PdqOk on success, PdqErrorInvalidParam on invalid args
  */
-int32_t PdqMiningContextInit(MiningContext_t *p_Ctx,
-                              const uint8_t *p_Header,
-                              const uint8_t *p_Target);
+PdqError_t PdqSha256Midstate(const uint8_t *p_BlockHeader, uint8_t *p_Midstate);
 
 /**
  * @brief Mine a range of nonces (HOT PATH - IRAM)
- * @param[in,out] p_Ctx       Mining context
- * @param[in]     StartNonce  First nonce to test
- * @param[in]     Count       Number of nonces to test (max 4096 for WDT safety)
- * @param[out]    p_FoundNonce Pointer to store found nonce (NULL if none found)
- * @return Number of hashes computed, or negative error code
+ * @param[in]     p_Job      Mining job with midstate, tail, target, nonce range
+ * @param[out]    p_Nonce    Pointer to store found nonce
+ * @param[out]    p_Found    Set to true if valid nonce found
+ * @return PdqOk on success (check p_Found for result)
  * @warning MUST be called from pinned task; not interrupt-safe
- * @note   Feeds WDT internally; do not wrap in critical section
  */
-IRAM_ATTR int32_t PdqMineNonce(MiningContext_t *p_Ctx,
-                                uint32_t StartNonce,
-                                uint32_t Count,
-                                uint32_t *p_FoundNonce);
+PDQ_IRAM_ATTR PdqError_t PdqSha256MineBlock(const PdqMiningJob_t *p_Job,
+                                              uint32_t *p_Nonce,
+                                              bool *p_Found);
 ```
 
 **Security Considerations for SHA256 Engine**:
@@ -402,9 +362,8 @@ IRAM_ATTR int32_t PdqMineNonce(MiningContext_t *p_Ctx,
 |------|------------|
 | Buffer overflow in Update | Validate Length against remaining buffer space |
 | NULL pointer dereference | Check all pointers at function entry |
-| Integer overflow in Length | Use uint64_t for total length tracking |
-| Uninitialized context use | Set magic value on init, verify before use |
-| Cross-core data race | Each core has own MiningContext_t instance |
+| Integer overflow in ByteCount | uint32_t sufficient for mining (max 80 bytes) |
+| Cross-core data race | Each core receives own PdqMiningJob_t copy |
 
 ### 4.2 Mining Task
 
@@ -443,68 +402,72 @@ IRAM_ATTR int32_t PdqMineNonce(MiningContext_t *p_Ctx,
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
-| Stack Size | 4096 bytes | Minimal; no recursion; stack canary enabled |
-| Priority | `configMAX_PRIORITIES - 1` | Highest for mining, below ISR |
+| Stack Size | 8192 bytes | Sufficient for SHA256 W[64] array on stack |
+| Priority | 5 | High priority for mining, configurable |
 | Core Affinity | Pinned (`xTaskCreatePinnedToCore`) | No migration overhead |
-| WDT Feed | Every 2048-4096 hashes | Balance throughput/safety (~1ms intervals) |
+| WDT Feed | Time-based, every 1000ms | Balance throughput/safety |
+| Nonce Batch | 8192 (ESP32) / 4096 (ESP8266) | Per-core batch size |
 | Stack Placement | DRAM (default) | Not IRAM to preserve IRAM for code |
 
 **Watchdog Timer (WDT) Management**:
 
 ```c
 /**
- * @brief Mining task main loop with proper WDT handling
- * @note  Task WDT timeout is 5 seconds by default
+ * @brief Mining task for Core 0 (handles nonces 0x00000000-0x7FFFFFFF)
+ * @note  Core 1 task is identical but with nonce range 0x80000000-0xFFFFFFFF
  */
-void MiningTaskMain(void *p_Param)
+PDQ_IRAM_ATTR static void MiningTaskCore0(void* p_Param)
 {
-    MiningTaskParams_t *p_Params = (MiningTaskParams_t *)p_Param;
-    MiningContext_t Context;
-    uint32_t IterationCount = 0;
-
-    /* Register this task with the Task WDT */
     esp_task_wdt_add(NULL);
+    uint32_t LastWdtFeed = 0;
+    uint32_t LocalHashes = 0;
 
-    while (1) {
-        /* Check for new job from queue (non-blocking) */
-        MiningJob_t Job;
-        if (xQueueReceive(p_Params->JobQueue, &Job, 0) == pdTRUE) {
-            PdqMiningContextInit(&Context, Job.Header, Job.Target);
-            IterationCount = 0;
+    while (s_State.Running) {
+        if (!s_State.HasJob) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
         }
 
-        /* Mine batch of nonces */
-        uint32_t FoundNonce;
-        int32_t HashCount = PdqMineNonce(&Context,
-                                          Context.CurrentNonce,
-                                          MINING_BATCH_SIZE,
-                                          &FoundNonce);
+        /* Copy job under mutex and set core-specific nonce range */
+        xSemaphoreTake(s_State.JobMutex, portMAX_DELAY);
+        PdqMiningJob_t Job = s_State.CurrentJob;
+        uint32_t MyJobVersion = s_State.JobVersion;
+        Job.NonceStart = 0x00000000;
+        Job.NonceEnd = 0x7FFFFFFF;
+        xSemaphoreGive(s_State.JobMutex);
 
-        if (HashCount > 0) {
-            Context.CurrentNonce += HashCount;
-            IterationCount += HashCount;
-        }
+        for (uint32_t Base = Job.NonceStart;
+             Base <= Job.NonceEnd && s_State.Running &&
+             s_State.JobVersion == MyJobVersion;
+             Base += PDQ_NONCE_BATCH_SIZE) {
 
-        /* Feed WDT every MINING_BATCH_SIZE iterations */
-        if (IterationCount >= WDT_FEED_THRESHOLD) {
-            esp_task_wdt_reset();
-            IterationCount = 0;
+            PdqMiningJob_t BatchJob = Job;
+            BatchJob.NonceStart = Base;
+            BatchJob.NonceEnd = Base + PDQ_NONCE_BATCH_SIZE - 1;
 
-            /* Yield briefly to allow other tasks to run */
-            taskYIELD();
-        }
+            uint32_t Nonce;
+            bool Found;
+            PdqSha256MineBlock(&BatchJob, &Nonce, &Found);
 
-        /* Handle share found */
-        if (Context.ShareFound) {
-            ShareSubmission_t Share = {
-                .JobId = Job.JobId,
-                .Nonce = FoundNonce,
-                .NTime = Job.NTime
-            };
-            xQueueSend(p_Params->ShareQueue, &Share, 0);
-            Context.ShareFound = false;
+            LocalHashes += (BatchJob.NonceEnd - BatchJob.NonceStart + 1);
+
+            if (Found) {
+                QueueShare(&Job, Nonce);
+                __atomic_fetch_add(&s_State.BlocksFound, 1, __ATOMIC_RELAXED);
+            }
+
+            /* Time-based WDT feed */
+            uint32_t Now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+            if (Now - LastWdtFeed > PDQ_WDT_FEED_INTERVAL) {
+                esp_task_wdt_reset();
+                vTaskDelay(1);
+                LastWdtFeed = Now;
+            }
         }
     }
+
+    esp_task_wdt_delete(NULL);
+    vTaskDelete(NULL);
 }
 ```
 
@@ -547,30 +510,32 @@ Client                                      Server
 **Data Structures with Size Constraints**:
 
 ```c
-/** Maximum sizes for Stratum data (defense against malicious pools) */
-#define PDQ_STRATUM_MAX_HOST_LEN        63   /**< Hostname + null terminator */
-#define PDQ_STRATUM_MAX_WALLET_LEN      63   /**< BTC address + null */
-#define PDQ_STRATUM_MAX_WORKER_LEN      31   /**< Worker name + null */
-#define PDQ_STRATUM_MAX_PASSWORD_LEN    31   /**< Password + null */
-#define PDQ_STRATUM_MAX_JOBID_LEN       63   /**< Job ID + null */
+/** Maximum sizes for Stratum data (defined in stratum_client.h) */
+#define PDQ_STRATUM_MAX_JOBID_LEN       64   /**< Job ID + null terminator */
+#define PDQ_STRATUM_MAX_EXTRANONCE_LEN  8    /**< Max extranonce1 bytes */
 #define PDQ_STRATUM_MAX_COINBASE_LEN    256  /**< Coinbase1/2 bytes */
 #define PDQ_STRATUM_MAX_MERKLE_BRANCHES 16   /**< Max merkle branches */
-#define PDQ_STRATUM_MAX_JSON_LEN        4096 /**< Max JSON response size */
+#define PDQ_STRATUM_RECV_BUFFER_SIZE    4096 /**< TCP receive buffer */
+#define PDQ_STRATUM_SEND_BUFFER_SIZE    512  /**< TCP send buffer */
+#define PDQ_STRATUM_DEFAULT_TIMEOUT_MS  30000 /**< Connection timeout */
+
+/** Size limits from pdq_types.h (used in config structs) */
+#define PDQ_MAX_HOST_LEN                64   /**< Pool hostname */
+#define PDQ_MAX_PASSWORD_LEN            64   /**< WiFi/pool password */
+#define PDQ_MAX_WALLET_LEN              64   /**< BTC wallet address */
+#define PDQ_MAX_WORKER_LEN              128  /**< Worker name */
 
 /**
- * @brief Stratum connection configuration
- * @note  All strings are null-terminated and length-validated on set
+ * @brief Pool configuration (from pdq_types.h)
  */
 typedef struct {
-    char     PoolHost[PDQ_STRATUM_MAX_HOST_LEN + 1];
-    uint16_t PoolPort;                                  /**< 1-65535 validated */
-    char     WalletAddress[PDQ_STRATUM_MAX_WALLET_LEN + 1];
-    char     WorkerName[PDQ_STRATUM_MAX_WORKER_LEN + 1];
-    char     Password[PDQ_STRATUM_MAX_PASSWORD_LEN + 1];
-} StratumConfig_t;
+    char     Host[PDQ_MAX_HOST_LEN + 1];
+    uint16_t Port;
+    char     Password[PDQ_MAX_PASSWORD_LEN + 1];
+} PdqPoolConfig_t;
 
 /**
- * @brief Mining job from pool
+ * @brief Mining job from pool (Stratum notify data)
  * @note  Variable-length fields track actual length for safety
  */
 typedef struct {
@@ -586,62 +551,47 @@ typedef struct {
     uint32_t NBits;
     uint32_t NTime;
     bool     CleanJobs;
-} MiningJob_t;
+} PdqStratumJob_t;
 ```
 
 **Interface with Error Handling**:
 
 ```c
-/**
- * @brief Connect to mining pool
- * @param[in] p_Config  Pool configuration (validated before use)
- * @return 0 on success, or:
- *         -EINVAL  Invalid config or NULL pointer
- *         -ENOENT  DNS resolution failed
- *         -ECONNREFUSED  Connection refused
- *         -ETIMEDOUT  Connection timeout
- */
-int32_t PdqStratumConnect(const StratumConfig_t *p_Config);
+PdqError_t PdqStratumInit(void);
+PdqError_t PdqStratumConnect(const char* p_Host, uint16_t Port);
+PdqError_t PdqStratumDisconnect(void);
+PdqError_t PdqStratumSubscribe(void);
+PdqError_t PdqStratumAuthorize(const char* p_Worker, const char* p_Password);
+PdqError_t PdqStratumSubmitShare(const char* p_JobId, uint32_t Extranonce2,
+                                  uint32_t Nonce, uint32_t NTime);
+PdqError_t PdqStratumProcess(void);
 
-/**
- * @brief Subscribe to pool notifications
- * @return 0 on success, negative errno on failure
- */
-int32_t PdqStratumSubscribe(void);
-
-/**
- * @brief Authorize worker with pool
- * @return 0 on success, -EACCES on auth failure, negative errno otherwise
- */
-int32_t PdqStratumAuthorize(void);
-
-/**
- * @brief Submit found share to pool
- * @param[in] p_Job   Job context (must not be NULL)
- * @param[in] Nonce   Found nonce value
- * @param[in] NTime   Block timestamp used
- * @return 0 on accepted, -EREJECTED on rejected, negative errno otherwise
- */
-int32_t PdqStratumSubmitShare(const MiningJob_t *p_Job, uint32_t Nonce, uint32_t NTime);
-
-/**
- * @brief Poll for new jobs (non-blocking)
- * @param[out] p_Job     Job buffer (must not be NULL)
- * @param[in]  TimeoutMs Timeout in milliseconds (0 = non-blocking)
- * @return 1 if new job received, 0 if no job, negative errno on error
- */
-int32_t PdqStratumPoll(MiningJob_t *p_Job, uint32_t TimeoutMs);
+bool              PdqStratumIsConnected(void);
+bool              PdqStratumIsReady(void);
+bool              PdqStratumHasNewJob(void);
+PdqStratumState_t PdqStratumGetState(void);
+PdqError_t        PdqStratumGetJob(PdqStratumJob_t* p_Job);
+uint32_t          PdqStratumGetDifficulty(void);
+void              PdqStratumGetExtranonce(uint8_t* p_Buffer, uint8_t* p_Len);
+uint8_t           PdqStratumGetExtranonce2Size(void);
+PdqError_t        PdqStratumBuildMiningJob(const PdqStratumJob_t* p_StratumJob,
+                                           const uint8_t* p_Extranonce1,
+                                           uint8_t Extranonce1Len,
+                                           uint32_t Extranonce2,
+                                           uint8_t Extranonce2Len,
+                                           uint32_t Difficulty,
+                                           PdqMiningJob_t* p_MiningJob);
 ```
 
 **Input Validation Requirements**:
 
 | Field | Validation |
 |-------|------------|
-| PoolHost | Non-empty, <= 63 chars, valid hostname chars only |
+| PoolHost | Non-empty, <= 64 chars, valid hostname chars only |
 | PoolPort | 1-65535 inclusive |
-| WalletAddress | Non-empty, <= 63 chars, alphanumeric only |
-| WorkerName | <= 31 chars, printable ASCII only |
-| JobId | <= 63 chars, hex or alphanumeric only |
+| WalletAddress | Non-empty, <= 64 chars, alphanumeric only |
+| WorkerName | <= 128 chars, printable ASCII only |
+| JobId | <= 64 chars, hex or alphanumeric only |
 | Coinbase1/2 | <= 256 bytes, valid hex encoding |
 | MerkleBranchCount | 0-16 inclusive |
 | JSON Response | <= 4096 bytes, valid UTF-8 |
@@ -1157,68 +1107,116 @@ For ESP32 boards without displays or maximum performance scenarios:
 ### 7.2 Build Targets
 
 ```ini
-# =============================================================================
-# CYD Boards with Display (Minimal Mode Default)
-# =============================================================================
+; PDQminer uses Arduino framework (not ESP-IDF directly)
+; Full configuration in platformio.ini at project root
+
+[env]
+platform = espressif32@6.5.0
+framework = arduino
+board_build.f_cpu = 240000000L
+build_flags =
+    -DCORE_DEBUG_LEVEL=0
+    -DPDQ_VERSION=\"0.1.0\"
+    -O3
+    -funroll-loops
+    -ffast-math
+    -fomit-frame-pointer
+    -finline-functions
+    -finline-limit=10000
+    -fno-strict-aliasing
+    -ftree-vectorize
+    -ffunction-sections
+    -fdata-sections
+    -mtext-section-literals
+
+; =============================================================================
+; CYD Boards with Display
+; =============================================================================
 
 [env:cyd_ili9341]
-platform = espressif32
 board = esp32dev
-framework = espidf
 build_flags =
-    -DBOARD_CYD_ILI9341
-    -DDISPLAY_DRIVER=ILI9341
-    -DDISPLAY_MODE=MINIMAL
+    ${env.build_flags}
+    -DPDQ_BOARD_CYD
+    -DPDQ_DISPLAY_ILI9341
+    -DUSER_SETUP_LOADED
+    -DILI9341_DRIVER
+    ; ... TFT_eSPI pin definitions ...
+lib_deps = bodmer/TFT_eSPI@^2.5.43
 
 [env:cyd_st7789]
-platform = espressif32
 board = esp32dev
-framework = espidf
 build_flags =
-    -DBOARD_CYD_ST7789
-    -DDISPLAY_DRIVER=ST7789
-    -DDISPLAY_MODE=MINIMAL
+    ${env.build_flags}
+    -DPDQ_BOARD_CYD
+    -DPDQ_DISPLAY_ST7789
+    -DUSER_SETUP_LOADED
+    -DST7789_DRIVER
+    ; ... TFT_eSPI pin definitions ...
+lib_deps = bodmer/TFT_eSPI@^2.5.43
 
-# =============================================================================
-# Headless Builds (Maximum Hashrate)
-# =============================================================================
-
-[env:esp32_headless]
-platform = espressif32
-board = esp32dev
-framework = espidf
-build_flags =
-    -DBOARD_ESP32_GENERIC
-    -DDISPLAY_MODE=HEADLESS
+; =============================================================================
+; Headless Builds (Maximum Hashrate)
+; =============================================================================
 
 [env:cyd_ili9341_headless]
-platform = espressif32
 board = esp32dev
-framework = espidf
 build_flags =
-    -DBOARD_CYD_ILI9341
-    -DDISPLAY_MODE=HEADLESS
-    ; Display pins available for other use
+    ${env.build_flags}
+    -DPDQ_BOARD_CYD
+    -DPDQ_HEADLESS
 
-[env:cyd_st7789_headless]
-platform = espressif32
+[env:esp32_headless]
 board = esp32dev
-framework = espidf
 build_flags =
-    -DBOARD_CYD_ST7789
-    -DDISPLAY_MODE=HEADLESS
+    ${env.build_flags}
+    -DPDQ_HEADLESS
+
+; =============================================================================
+; Development, Debug & Benchmark
+; =============================================================================
+
+[env:cyd_debug]
+board = esp32dev
+build_type = debug
+build_flags = ... -DPDQ_DEBUG -Og
+
+[env:benchmark]
+board = esp32dev
+build_flags = ... -DPDQ_HEADLESS -DPDQ_BENCHMARK
+build_src_filter = +<*> -<main.cpp> +<main_benchmark.cpp>
+
+[env:native]
+platform = native
+test_framework = unity
+
+; =============================================================================
+; ESP8266 Support (single-core, reduced performance)
+; =============================================================================
+
+[env:esp8266_headless]
+platform = espressif8266@4.2.1
+board = nodemcuv2
+board_build.f_cpu = 160000000L
+build_flags =
+    -DPDQ_HEADLESS
+    -DESP8266
+    -O3
 ```
 
 ### 7.3 Expected Hashrate by Build
 
-| Build Target | Display Mode | Expected Hashrate |
-|--------------|--------------|-------------------|
-| `cyd_ili9341` | Minimal | ~1020 KH/s |
-| `cyd_st7789` | Minimal | ~1020 KH/s |
-| `esp32_headless` | Headless | ~1050+ KH/s |
-| `cyd_*_headless` | Headless | ~1050+ KH/s |
+| Build Target | Display Mode | Platform | Expected Hashrate |
+|--------------|--------------|----------|-------------------|
+| `cyd_ili9341` | Minimal | ESP32 | ~1020 KH/s |
+| `cyd_st7789` | Minimal | ESP32 | ~1020 KH/s |
+| `esp32_headless` | Headless | ESP32 | ~1050+ KH/s |
+| `cyd_ili9341_headless` | Headless | ESP32 | ~1050+ KH/s |
+| `benchmark` | Headless | ESP32 | Raw measurement |
+| `esp8266_headless` | Headless | ESP8266 | TBD (single-core) |
 
 > **Note**: Headless builds are expected to gain 20-50 KH/s over display-enabled builds due to eliminated SPI overhead and freed CPU cycles.
+> **Note**: ESP8266 is single-core at 160MHz. Hashrate will be significantly lower than ESP32.
 
 ---
 
@@ -2204,14 +2202,14 @@ int32_t PdqMdnsInit(void)
 | Component          | File                           | Status       | Notes                                                             |
 | --------------------| --------------------------------| --------------| -------------------------------------------------------------------|
 | SHA256 Engine      | `src/core/sha256_engine.c`     | **Complete** | 64-round unrolled, midstate optimization, IRAM placement, W pre-computation |
-| Mining Task        | `src/core/mining_task.c`       | **Complete** | Dual-core FreeRTOS tasks, atomic counters, proper nonce splitting |
+| Mining Task        | `src/core/mining_task.c`       | **Complete** | Dual-core (ESP32) / single-core (ESP8266), atomic counters, nonce splitting |
 | Board HAL          | `src/hal/board_hal.c`          | **Complete** | WDT, temp, heap, chip ID using ESP-IDF APIs                       |
 | Benchmark Firmware | `src/main_benchmark.cpp`       | **Complete** | Single/dual-core hashrate measurement                             |
 | Stratum Client     | `src/stratum/stratum_client.c` | **Complete** | Full V1 protocol, job building, merkle root computation           |
 | WiFi Manager       | `src/network/wifi_manager.cpp` | **Complete** | Captive portal, NVS config saving                                 |
 | Config Manager     | `src/config/config_manager.c`  | **Complete** | NVS storage for all settings                                      |
 | Main Entry Point   | `src/main.cpp`                 | **Complete** | Full initialization sequence with timeout handling                |
-| Build System       | `platformio.ini`               | **Complete** | CYD boards, headless, debug, benchmark environments               |
+| Build System       | `platformio.ini`               | **Complete** | ESP32 (CYD, headless, debug, benchmark), ESP8266, native          |
 | Display Driver     | `src/display/display_driver.cpp` | **Complete** | TFT_eSPI for ILI9341/ST7789, mining stats screen                 |
 
 ### 12.2 Stub Components (Awaiting Implementation)
@@ -2228,8 +2226,9 @@ int32_t PdqMdnsInit(void)
 | cyd_st7789 | 16.0% | 61.2% | SUCCESS |
 | esp32_headless | 15.9% | 59.9% | SUCCESS |
 | benchmark | 6.5% | 22.0% | SUCCESS |
+| esp8266_headless | TBD | TBD | Added (Session 26) |
 
-### 12.4 Code Review Status (Round 6 - 100% Confidence)
+### 12.4 Code Review Status (Round 8 - 100% Confidence)
 
 | Component      | Accuracy   | Security | Optimization  | Notes                                                |
 | ----------------| -----------| ----------| --------------| ------------------------------------------------------|
