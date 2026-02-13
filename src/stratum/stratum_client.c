@@ -456,11 +456,29 @@ PdqError_t PdqStratumSubmitShare(const char* p_JobId, uint32_t Extranonce2, uint
     }
     BytesToHex(Extranonce2Bytes, s_Ctx.Extranonce2Size, Extranonce2Hex);
 
+    char NTimeHex[9] = {0};
+    uint8_t NTimeBytes[4] = {
+        (uint8_t)(NTime),
+        (uint8_t)(NTime >> 8),
+        (uint8_t)(NTime >> 16),
+        (uint8_t)(NTime >> 24)
+    };
+    BytesToHex(NTimeBytes, 4, NTimeHex);
+
+    char NonceHex[9] = {0};
+    uint8_t NonceBytes[4] = {
+        (uint8_t)(Nonce),
+        (uint8_t)(Nonce >> 8),
+        (uint8_t)(Nonce >> 16),
+        (uint8_t)(Nonce >> 24)
+    };
+    BytesToHex(NonceBytes, 4, NonceHex);
+
     s_Ctx.SubmitId++;
     snprintf(s_Ctx.SendBuffer, sizeof(s_Ctx.SendBuffer),
-             "{\"id\":%u,\"method\":\"mining.submit\",\"params\":[\"%s\",\"%s\",\"%s\",\"%08x\",\"%08x\"]}",
+             "{\"id\":%u,\"method\":\"mining.submit\",\"params\":[\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"]}",
              JSON_ID_SUBMIT_BASE + s_Ctx.SubmitId, s_Ctx.Worker, p_JobId,
-             Extranonce2Hex, NTime, Nonce);
+             Extranonce2Hex, NTimeHex, NonceHex);
 
     return SendJson(s_Ctx.SendBuffer);
 }

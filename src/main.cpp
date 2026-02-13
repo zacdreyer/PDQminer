@@ -142,6 +142,13 @@ void loop() {
     PdqStratumProcess();
     PdqApiProcess();
 
+    static uint32_t s_LastJobCheck = 0;
+    if (millis() - s_LastJobCheck > 5000) {
+        Serial.printf("[DBG] HasNewJob=%d, StratumReady=%d\n",
+                      PdqStratumHasNewJob(), PdqStratumIsReady());
+        s_LastJobCheck = millis();
+    }
+
     if (PdqStratumHasNewJob()) {
         Serial.println("[DBG] New job received!");
         PdqStratumGetJob(&s_StratumJob);
@@ -185,7 +192,7 @@ void loop() {
 
 #ifndef PDQ_HEADLESS
     static uint32_t s_LastDisplayUpdate = 0;
-    if (millis() - s_LastDisplayUpdate > 5000) {
+    if (millis() - s_LastDisplayUpdate > 500) {
         PdqDisplayUpdate(&s_Stats);
         s_LastDisplayUpdate = millis();
     }

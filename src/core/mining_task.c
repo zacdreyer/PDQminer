@@ -1,6 +1,6 @@
 /**
  * @file mining_task.c
- * @brief Dual-core mining task implementation
+ * @brief Mining task implementation with ESP32/ESP8266 support
  * @copyright Copyright (c) 2025 PDQminer Contributors
  * @license GPL-3.0
  */
@@ -9,21 +9,25 @@
 #include "sha256_engine.h"
 #include <string.h>
 
-#ifdef ESP_PLATFORM
+#if defined(ESP_PLATFORM)
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "freertos/queue.h"
 #include "esp_task_wdt.h"
 #define PDQ_IRAM_ATTR IRAM_ATTR
+#define PDQ_USE_RTOS 1
+#define PDQ_MINING_STACK_SIZE   8192
+#define PDQ_MINING_PRIORITY     5
+#define PDQ_NONCE_BATCH_SIZE    8192
+#define PDQ_WDT_FEED_INTERVAL   1000
 #else
 #define PDQ_IRAM_ATTR
-#endif
-
-#define PDQ_MINING_STACK_SIZE   4096
-#define PDQ_MINING_PRIORITY     5
+#define PDQ_USE_RTOS 0
 #define PDQ_NONCE_BATCH_SIZE    4096
 #define PDQ_WDT_FEED_INTERVAL   1000
+#endif
+
 #define PDQ_SHARE_QUEUE_SIZE    8
 
 typedef struct {
@@ -37,7 +41,11 @@ typedef struct {
     volatile uint32_t       BlocksFound;
     uint32_t                StartTime;
     PdqMiningJob_t          CurrentJob;
-#ifdef ESP_PLATFORM
+    uint32_t                CurrentNonce;
+    uint32_t                LastWdtFeed;
+    uint32_t                LastHashReport;
+    uint64_t                LocalHashes;
+#if PDQ_USE_RTOS
     TaskHandle_t            TaskHandle[2];
     SemaphoreHandle_t       JobMutex;
     QueueHandle_t           ShareQueue;
@@ -50,7 +58,7 @@ typedef struct {
 
 static MiningState_t s_State = {0};
 
-#ifdef ESP_PLATFORM
+#if PDQ_USE_RTOS
 static void QueueShare(const PdqMiningJob_t* p_Job, uint32_t Nonce) {
     PdqShareInfo_t Share;
     strncpy(Share.JobId, p_Job->JobId, 64);
@@ -170,11 +178,24 @@ PDQ_IRAM_ATTR static void MiningTaskCore1(void* p_Param) {
     esp_task_wdt_delete(NULL);
     vTaskDelete(NULL);
 }
+#else
+static void QueueShareNonRtos(const PdqMiningJob_t* p_Job, uint32_t Nonce) {
+    uint8_t NextHead = (s_State.ShareHead + 1) % PDQ_SHARE_QUEUE_SIZE;
+    if (NextHead != s_State.ShareTail) {
+        PdqShareInfo_t* Share = &s_State.ShareBuffer[s_State.ShareHead];
+        strncpy(Share->JobId, p_Job->JobId, 64);
+        Share->JobId[64] = '\0';
+        Share->Extranonce2 = p_Job->Extranonce2;
+        Share->Nonce = Nonce;
+        Share->NTime = p_Job->NTime;
+        s_State.ShareHead = NextHead;
+    }
+}
 #endif
 
 PdqError_t PdqMiningInit(void) {
     memset(&s_State, 0, sizeof(s_State));
-#ifdef ESP_PLATFORM
+#if PDQ_USE_RTOS
     s_State.JobMutex = xSemaphoreCreateMutex();
     if (s_State.JobMutex == NULL) return PdqErrorNoMemory;
     s_State.ShareQueue = xQueueCreate(PDQ_SHARE_QUEUE_SIZE, sizeof(PdqShareInfo_t));
@@ -189,7 +210,7 @@ PdqError_t PdqMiningStart(void) {
     s_State.Running = true;
     s_State.StartTime = 0;
 
-#ifdef ESP_PLATFORM
+#if PDQ_USE_RTOS
     s_State.StartTime = xTaskGetTickCount() * portTICK_PERIOD_MS;
 
     xTaskCreatePinnedToCore(
@@ -218,7 +239,7 @@ PdqError_t PdqMiningStart(void) {
 
 PdqError_t PdqMiningStop(void) {
     s_State.Running = false;
-#ifdef ESP_PLATFORM
+#if PDQ_USE_RTOS
     vTaskDelay(pdMS_TO_TICKS(100));
 #endif
     return PdqOk;
@@ -227,13 +248,13 @@ PdqError_t PdqMiningStop(void) {
 PdqError_t PdqMiningSetJob(const PdqMiningJob_t* p_Job) {
     if (p_Job == NULL) return PdqErrorInvalidParam;
 
-#ifdef ESP_PLATFORM
+#if PDQ_USE_RTOS
     xSemaphoreTake(s_State.JobMutex, portMAX_DELAY);
 #endif
     memcpy(&s_State.CurrentJob, p_Job, sizeof(PdqMiningJob_t));
     s_State.JobVersion++;
     s_State.HasJob = true;
-#ifdef ESP_PLATFORM
+#if PDQ_USE_RTOS
     xSemaphoreGive(s_State.JobMutex);
 #endif
 
@@ -246,7 +267,7 @@ PdqError_t PdqMiningGetStats(PdqMinerStats_t* p_Stats) {
     static uint64_t LastTotalHashes = 0;
     static uint32_t LastStatTime = 0;
 
-#ifdef ESP_PLATFORM
+#if PDQ_USE_RTOS
     uint32_t Now = xTaskGetTickCount() * portTICK_PERIOD_MS;
     uint32_t Elapsed = Now - LastStatTime;
 
@@ -278,8 +299,9 @@ bool PdqMiningIsRunning(void) {
 }
 
 bool PdqMiningHasShare(void) {
-#ifdef ESP_PLATFORM
-    if (s_State.ShareQueue == NULL) return false; return uxQueueMessagesWaiting(s_State.ShareQueue) > 0;
+#if PDQ_USE_RTOS
+    if (s_State.ShareQueue == NULL) return false;
+    return uxQueueMessagesWaiting(s_State.ShareQueue) > 0;
 #else
     return s_State.ShareHead != s_State.ShareTail;
 #endif
@@ -287,8 +309,9 @@ bool PdqMiningHasShare(void) {
 
 PdqError_t PdqMiningGetShare(PdqShareInfo_t* p_Share) {
     if (p_Share == NULL) return PdqErrorInvalidParam;
-#ifdef ESP_PLATFORM
-    if (s_State.ShareQueue == NULL) return PdqErrorInvalidParam; if (xQueueReceive(s_State.ShareQueue, p_Share, 0) == pdTRUE) {
+#if PDQ_USE_RTOS
+    if (s_State.ShareQueue == NULL) return PdqErrorInvalidParam;
+    if (xQueueReceive(s_State.ShareQueue, p_Share, 0) == pdTRUE) {
         return PdqOk;
     }
     return PdqErrorInvalidParam;
@@ -301,7 +324,7 @@ PdqError_t PdqMiningGetShare(PdqShareInfo_t* p_Share) {
 }
 
 void PdqMiningClearShares(void) {
-#ifdef ESP_PLATFORM
+#if PDQ_USE_RTOS
     if (s_State.ShareQueue != NULL) {
         xQueueReset(s_State.ShareQueue);
     }
