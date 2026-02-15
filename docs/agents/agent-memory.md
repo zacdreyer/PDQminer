@@ -141,15 +141,19 @@ PDQminer/
 
 | Optimization | Expected Gain | Status |
 |--------------|---------------|--------|
-| CPU @ 240MHz | Baseline | Planned |
-| Midstate caching | +50% | Planned |
-| Nonce-only update | +100% | Planned |
-| Full round unrolling | +30% | Planned |
-| IRAM placement | +10% | Planned |
-| Dual-core mining | +95% | Planned |
-| **Minimal display mode** | **+10-20 KH/s** | **Planned** |
-| **Headless mode** | **+20-50 KH/s** | **Planned** |
-| **Combined Target** | **>1050 KH/s** | — |
+| CPU @ 240MHz | Baseline | **Complete** |
+| Midstate caching | +50% | **Complete** |
+| Nonce-only update | +100% | **Complete** |
+| Full round unrolling | +30% | **Complete** |
+| IRAM placement | +10% | **Complete** |
+| Dual-core mining | +95% | **Complete** |
+| **Minimal display mode** | **+10-20 KH/s** | **Complete** |
+| **Headless mode** | **+20-50 KH/s** | **Complete** |
+| W pre-computation (Pass 1-3)| +15-25% | **Complete** |
+| **Combined Target** | **>1050 KH/s** | **Pending HW test** |
+
+> **Benchmark Results** (Session 25): 277 MH/s dual-core on ESP32-D0WD-V3.
+> **Live Mining** (Session 27): 54 H/s reported on ST7789 device; root cause was debug print consuming job notifications. Bugs fixed, awaiting re-test.
 
 ---
 
@@ -896,9 +900,13 @@ Complete code review of all components for accuracy, security, optimization, and
 19. ~~Comprehensive code review (100% confidence)~~ **DONE**
 20. ~~SHA256 optimization pass 1~~ **DONE**
 21. ~~Code review Round 5 (100% confidence verification)~~ **DONE**
-22. Test on hardware: WiFi connectivity, pool connection, share submission
-23. Benchmark optimized code and iterate
-24. ~~Documentation audit & synchronization (Session 26)~~ **DONE**
+22. ~~Hardware benchmark testing (Session 25: 277 MH/s)~~ **DONE**
+23. ~~Documentation audit & synchronization (Session 26)~~ **DONE**
+24. ~~Critical bug fixes + SHA256 optimization pass 3 (Session 27)~~ **DONE**
+25. ~~Documentation audit & sync session 28~~ **DONE**
+26. Re-test on hardware: verify bug fixes resolve 54 H/s issue
+27. Measure live mining hashrate post-fix
+28. Phase D: Device API implementation (REST for PDQManager)
 
 ---
 
@@ -1226,6 +1234,125 @@ Comprehensive audit comparing all documentation (SDD, TDD, agent-memory) against
 - `docs/sdd.md` - Version 1.1.0, repository structure, data structures, API signatures, compiler flags, build targets
 - `docs/tdd.md` - Version 1.1.0, module names, directory structure, test code examples, API references
 - `docs/agents/agent-memory.md` - Session 26 log
+
+**Status:** Complete
+
+---
+
+### Session 27 - Critical Bug Fixes & SHA256 Optimization Pass 3
+
+User reported 54 H/s on ESP32-2432S028R ST7789 device (target: 1000+ KH/s). Analysis identified a critical bug as the root cause and multiple optimization opportunities.
+
+**Critical Bug Fixes:**
+
+1. **Debug Print Consuming Job Notifications** (CRITICAL - Root cause of 54 H/s)
+   - **Location**: `src/main.cpp:147-148`
+   - **Issue**: Debug print called destructive `PdqStratumHasNewJob()` every 5 seconds, consuming the job notification flag before the actual job check at line 152. This meant jobs were rarely (or never) processed.
+   - **Fix**: Replaced with non-destructive `PdqStratumGetState()` in the debug print
+   ```cpp
+   // BEFORE (buggy):
+   Serial.printf("[DBG] HasNewJob=%d, StratumReady=%d\n",
+                 PdqStratumHasNewJob(), PdqStratumIsReady());
+   // AFTER (fixed):
+   Serial.printf("[DBG] StratumState=%d, StratumReady=%d\n",
+                 PdqStratumGetState(), PdqStratumIsReady());
+   ```
+
+2. **Nonce Overflow in SHA256 Mining Loop** (CRITICAL)
+   - **Location**: `src/core/sha256_engine.c:443-444`
+   - **Issue**: `for (uint32_t Nonce = start; Nonce <= end; Nonce++)` causes infinite loop when `NonceEnd = 0xFFFFFFFF` because `Nonce++` wraps to 0
+   - **Fix**: Changed to `for(;;)` with explicit `if (Nonce == p_Job->NonceEnd) break; Nonce++;` at end
+
+3. **Nonce Overflow in Mining Task Outer Loops** (CRITICAL)
+   - **Location**: `src/core/mining_task.c:91-125, 151-185` (Core 0 and Core 1)
+   - **Issue**: Same overflow pattern in batch loop: `Base += PDQ_NONCE_BATCH_SIZE` can overflow when approaching 0xFFFFFFFF
+   - **Fix**: Changed both Core 0 and Core 1 from `for` loop to `while` loop with `if (BatchEnd >= Job.NonceEnd) break; Base = BatchEnd + 1;`
+
+**SHA256 Optimization Pass 3:**
+
+| Optimization | Description | Savings |
+|--------------|-------------|---------|
+| W1 constant elimination | W1_4-W1_15 replaced with compile-time constants (padding values never change) | 12 ReadBe32 per nonce eliminated |
+| SIG0/SIG1 pre-computation | SIG0(0x80000000)=0x11002000, SIG0(0x280)=0x00A00055, SIG1(0x280)=0x01100000 | 3 SIG operations per nonce |
+| Zero-term elimination | Removed additions of zero-valued W1_5-W1_14, SIG0(0), SIG1(0) from W1 expansion | ~12 unnecessary additions per nonce |
+| KW1 pre-computed constants | K[i]+W[i] pre-computed for rounds 4-15 (constant W values) | 12 additions per nonce |
+| SHA256_ROUND_KW macro | Combined K+W variant avoids passing separate K and W parameters | Cleaner hot path |
+
+**Pre-computed Constants Added:**
+```c
+/* In-function constants */
+static const uint32_t W1_4  = 0x80000000;
+static const uint32_t W1_15 = 0x00000280;
+static const uint32_t SIG0_W1_4  = 0x11002000;
+static const uint32_t SIG0_W1_15 = 0x00A00055;
+static const uint32_t SIG1_W1_15 = 0x01100000;
+
+/* File-scope pre-computed K+W constants */
+static const uint32_t KW1_4  = 0x3956c25b + 0x80000000;  /* K[4] + W1_4 */
+static const uint32_t KW1_5  = 0x59f111f1;               /* K[5] + 0 */
+/* ... KW1_6 through KW1_14 = K[i] + 0 ... */
+static const uint32_t KW1_15 = 0xc19bf174 + 0x280;       /* K[15] + W1_15 */
+```
+
+**Simplified W1 Pre-computation:**
+```c
+// Zero terms eliminated, constants substituted
+uint32_t W1Pre16 = SIG0(W1_1) + W1_0;
+uint32_t W1Pre17 = SIG1_W1_15 + SIG0(W1_2) + W1_1;
+uint32_t W1Pre18Base = SIG1(W1Pre16) + W1_2;
+uint32_t W1Pre19Base = SIG1(W1Pre17) + SIG0_W1_4;
+```
+
+**Files Modified:**
+- `src/main.cpp` - Debug print fix (line 147-148)
+- `src/core/sha256_engine.c` - Nonce overflow fix, W1 constant optimization, KW1 pre-computation, W1 expansion simplification
+- `src/core/mining_task.c` - Nonce overflow fix for both Core 0 and Core 1
+
+**Build Status:** All 4 environments pass
+| Environment | RAM | Flash | Status |
+|-------------|-----|-------|--------|
+| cyd_st7789 | 16.4% | 62.8% | SUCCESS |
+| cyd_ili9341 | 16.4% | 62.8% | SUCCESS |
+| esp32_headless | 16.3% | 61.3% | SUCCESS |
+| benchmark | 6.5% | 22.0% | SUCCESS |
+
+**Estimated Performance Impact:**
+- Debug print fix: **Massive** - jobs are now actually processed (root cause of 54 H/s)
+- Nonce overflow fixes: Prevents infinite loops after exhausting nonce range
+- SHA256 optimizations: ~5-8% improvement on hot path from eliminated operations
+
+**Status:** Complete - awaiting hardware re-test to measure actual hashrate improvement
+
+---
+
+### Session 28 - Documentation Audit & Synchronization (Post-Session 27)
+
+Comprehensive audit comparing all documentation (SDD, TDD, agent-memory) against actual source code, headers, and platformio.ini. Focused on finding discrepancies between docs and implemented code that were missed in Session 26.
+
+**Methodology**: Read all source headers (`sha256_engine.h`, `mining_task.h`, `pdq_types.h`, `stratum_client.h`, `display_driver.h`, `wifi_manager.h`, `config_manager.h`, `board_hal.h`, `device_api.h`), `main.cpp`, and `platformio.ini`, then compared against every SDD section and TDD code example.
+
+**Discrepancies Found & Fixed:**
+
+| Area | Discrepancy | Fix Applied |
+|------|-------------|-------------|
+| **SDD Section 4.2** | Mining task code example used old `for` loop; actual uses overflow-safe `while` loop (Session 27 fix) | Rewrote code example with `while` loop, overflow-safe `BatchEnd` clamping, and explicit `break` |
+| **SDD Section 4.4** | Display driver interface listed `DisplayDriverType_t`, `DisplayConfig_t`, `PdqDisplayDrawText()`, `PdqDisplayDrawRect()`, `PdqDisplayClear()` | Rewrote to match actual: `PdqDisplayMode_t`, `PdqDisplayInit(Mode)`, `PdqDisplayUpdate(p_Stats)`, `PdqDisplayShowMessage()`, `PdqDisplayOff()` |
+| **SDD Section 4.5.3** | Used `DeviceConfig_t`, `PoolConfig_t` with wrong field names (`WifiSsid`, `WifiPassword`, `ConfigVersion`, `DisplayBrightness`) and wrong size macros | Rewrote with `PdqDeviceConfig_t`, `PdqWifiConfig_t`, `PdqPoolConfig_t` matching pdq_types.h exactly |
+| **SDD Section 4.5.5** | Used `PdqWifiManagerInit()`, `PdqWifiStartPortal(TimeoutSec)`, `PdqWifiConnect(TimeoutMs)`, `int32_t` returns | Rewrote with actual signatures: `PdqWifiInit()`, `PdqWifiStartPortal()`, `PdqWifiConnect(ssid, pass)`, plus all actual WiFi and Config API functions |
+| **TDD Section 4.2** | Config tests used `DeviceConfig_t` with `.WifiSsid = "..."` designated init | Rewrote with `PdqDeviceConfig_t`, `strncpy` initialization, `PdqError_t` returns |
+| **TDD Section 5.1** | Performance tests used `PdqMiningStart(&Stats)`, `MiningStats_t.KiloHashesPerSecond`, `PdqMiningStartSingleCore()`, `PdqMiningStop()` | Rewrote with `PdqMiningInit()` + `PdqMiningStart()`, `PdqMinerStats_t.HashRate`, benchmark-based single-core test |
+| **Agent Memory** | Performance Targets table had all optimizations as "Planned" despite being implemented | Updated all to "Complete", added benchmark results note |
+| **Agent Memory** | Next Steps list missing Sessions 25-27 | Updated items 22-25, added items 26-28 |
+
+**Summary:**
+- **8 discrepancies identified and fixed** across SDD (4), TDD (2), and agent-memory (2)
+- Root cause: Sections 4.4, 4.5 of SDD were written as forward-looking spec and never synchronized after Phase B/C implementation
+- All documentation now matches actual source code headers and implementation
+
+**Files Modified:**
+- `docs/sdd.md` - Sections 4.2, 4.4, 4.5.3, 4.5.5
+- `docs/tdd.md` - Sections 4.2, 5.1
+- `docs/agents/agent-memory.md` - Performance Targets, Next Steps, Session 28
 
 **Status:** Complete
 

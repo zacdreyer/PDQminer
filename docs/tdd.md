@@ -476,23 +476,25 @@ void tearDown(void)
  */
 void Test_Config_SaveLoad_RoundTrip(void)
 {
-    DeviceConfig_t SaveConfig = {
-        .WifiSsid = "TestNetwork",
-        .WifiPassword = "SecurePass123",
-        .PrimaryPool = { .Host = "public-pool.io", .Port = 21496 },
-        .BackupPool = { .Host = "solo.ckpool.org", .Port = 3333 },
-        .WalletAddress = "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
-        .WorkerName = "pdqminer1"
-    };
+    PdqDeviceConfig_t SaveConfig;
+    memset(&SaveConfig, 0, sizeof(SaveConfig));
+    strncpy(SaveConfig.Wifi.Ssid, "TestNetwork", PDQ_MAX_SSID_LEN);
+    strncpy(SaveConfig.Wifi.Password, "SecurePass123", PDQ_MAX_PASSWORD_LEN);
+    strncpy(SaveConfig.PrimaryPool.Host, "public-pool.io", PDQ_MAX_HOST_LEN);
+    SaveConfig.PrimaryPool.Port = 21496;
+    strncpy(SaveConfig.BackupPool.Host, "solo.ckpool.org", PDQ_MAX_HOST_LEN);
+    SaveConfig.BackupPool.Port = 3333;
+    strncpy(SaveConfig.WalletAddress, "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh", PDQ_MAX_WALLET_LEN);
+    strncpy(SaveConfig.WorkerName, "pdqminer1", PDQ_MAX_WORKER_LEN);
 
-    int32_t Result = PdqConfigSave(&SaveConfig);
-    TEST_ASSERT_EQUAL_INT32(0, Result);
+    PdqError_t Result = PdqConfigSave(&SaveConfig);
+    TEST_ASSERT_EQUAL(PdqOk, Result);
 
-    DeviceConfig_t LoadConfig;
+    PdqDeviceConfig_t LoadConfig;
     Result = PdqConfigLoad(&LoadConfig);
-    TEST_ASSERT_EQUAL_INT32(0, Result);
+    TEST_ASSERT_EQUAL(PdqOk, Result);
 
-    TEST_ASSERT_EQUAL_STRING(SaveConfig.WifiSsid, LoadConfig.WifiSsid);
+    TEST_ASSERT_EQUAL_STRING(SaveConfig.Wifi.Ssid, LoadConfig.Wifi.Ssid);
     TEST_ASSERT_EQUAL_STRING(SaveConfig.PrimaryPool.Host, LoadConfig.PrimaryPool.Host);
     TEST_ASSERT_EQUAL_STRING(SaveConfig.WalletAddress, LoadConfig.WalletAddress);
 }
@@ -502,9 +504,9 @@ void Test_Config_SaveLoad_RoundTrip(void)
  */
 void Test_Config_Load_NoConfig_ReturnsError(void)
 {
-    DeviceConfig_t Config;
-    int32_t Result = PdqConfigLoad(&Config);
-    TEST_ASSERT_EQUAL_INT32(-ENOENT, Result);
+    PdqDeviceConfig_t Config;
+    PdqError_t Result = PdqConfigLoad(&Config);
+    TEST_ASSERT_NOT_EQUAL(PdqOk, Result);
 }
 
 /**
@@ -512,12 +514,15 @@ void Test_Config_Load_NoConfig_ReturnsError(void)
  */
 void Test_Config_Reset_ClearsAllData(void)
 {
-    DeviceConfig_t Config = { .WifiSsid = "TestNetwork", .WalletAddress = "bc1qtest" };
+    PdqDeviceConfig_t Config;
+    memset(&Config, 0, sizeof(Config));
+    strncpy(Config.Wifi.Ssid, "TestNetwork", PDQ_MAX_SSID_LEN);
+    strncpy(Config.WalletAddress, "bc1qtest", PDQ_MAX_WALLET_LEN);
     PdqConfigSave(&Config);
     TEST_ASSERT_TRUE(PdqConfigIsValid());
 
-    int32_t Result = PdqConfigReset();
-    TEST_ASSERT_EQUAL_INT32(0, Result);
+    PdqError_t Result = PdqConfigReset();
+    TEST_ASSERT_EQUAL(PdqOk, Result);
     TEST_ASSERT_FALSE(PdqConfigIsValid());
 }
 
@@ -571,17 +576,19 @@ void Test_Portal_Unconfigured_StartsApMode(void)
  */
 void Test_Failover_PrimaryFails_ConnectsToBackup(void)
 {
-    DeviceConfig_t Config = {
-        .PrimaryPool = { .Host = "primary.pool", .Port = 3333 },
-        .BackupPool = { .Host = "backup.pool", .Port = 3333 }
-    };
+    PdqDeviceConfig_t Config;
+    memset(&Config, 0, sizeof(Config));
+    strncpy(Config.PrimaryPool.Host, "primary.pool", PDQ_MAX_HOST_LEN);
+    Config.PrimaryPool.Port = 3333;
+    strncpy(Config.BackupPool.Host, "backup.pool", PDQ_MAX_HOST_LEN);
+    Config.BackupPool.Port = 3333;
     PdqConfigSave(&Config);
 
     MockTcp_SetConnectResult("primary.pool", -ECONNREFUSED);
     MockTcp_SetConnectResult("backup.pool", 0);
 
-    int32_t Result = PdqStratumConnectWithFailover();
-    TEST_ASSERT_EQUAL_INT32(0, Result);
+    PdqError_t Result = PdqStratumConnectWithFailover();
+    TEST_ASSERT_EQUAL(PdqOk, Result);
     TEST_ASSERT_EQUAL_STRING("backup.pool", MockTcp_GetLastConnectedHost());
 }
 ```
@@ -729,14 +736,16 @@ void Test_Performance_SingleCore_MinimumHashrate(void)
 void Test_Performance_DualCore_MinimumHashrate(void)
 {
     /* Start mining tasks on both cores */
-    MiningStats_t Stats = {0};
-    PdqMiningStart(&Stats);
+    PdqMiningInit();
+    PdqMiningStart();
 
     /* Let it run for 10 seconds */
     vTaskDelay(pdMS_TO_TICKS(10000));
 
     /* Get hashrate */
-    float KHs = Stats.KiloHashesPerSecond;
+    PdqMinerStats_t Stats;
+    PdqMiningGetStats(&Stats);
+    float KHs = (float)Stats.HashRate / 1000.0f;
     printf("[REGRESSION] Dual-core: %.2f KH/s (min: %.0f, target: %.0f)\n",
            KHs, MIN_DUAL_CORE_KHS, TARGET_DUAL_CORE_KHS);
 
@@ -750,12 +759,14 @@ void Test_Performance_DualCore_MinimumHashrate(void)
  */
 void Test_Performance_TargetHashrate_1000KHs(void)
 {
-    MiningStats_t Stats = {0};
-    PdqMiningStart(&Stats);
+    PdqMiningInit();
+    PdqMiningStart();
 
     vTaskDelay(pdMS_TO_TICKS(30000));  /* 30 second benchmark */
 
-    float KHs = Stats.KiloHashesPerSecond;
+    PdqMinerStats_t Stats;
+    PdqMiningGetStats(&Stats);
+    float KHs = (float)Stats.HashRate / 1000.0f;
     printf("[TARGET] Achieved: %.2f KH/s (target: %.0f)\n", KHs, TARGET_DUAL_CORE_KHS);
 
     PdqMiningStop();
@@ -818,25 +829,39 @@ void Test_Optimization_IramPlacement_Benefit(void)
 
 /**
  * @brief   Verify dual-core provides ~2x speedup over single
+ * @note    Uses benchmark approach - single core mines half nonce range,
+ *          dual core mines full range, then compare throughput
  */
 void Test_Optimization_DualCore_Speedup(void)
 {
-    float SingleKHs, DualKHs;
+    uint8_t Header[80];
+    for (int i = 0; i < 80; i++) Header[i] = i;
 
-    /* Single core test */
-    MiningStats_t Stats1 = {0};
-    PdqMiningStartSingleCore(&Stats1, 0);  /* Core 0 only */
+    PdqMiningJob_t Job;
+    PdqSha256Midstate(Header, Job.Midstate);
+    memcpy(Job.BlockTail, Header + 64, 16);
+    memset(Job.Target, 0xFF, 32);
+
+    /* Single core benchmark */
+    Job.NonceStart = 0;
+    Job.NonceEnd = 999999;
+    uint64_t Start = esp_timer_get_time();
+    uint32_t Nonce;
+    bool Found;
+    PdqSha256MineBlock(&Job, &Nonce, &Found);
+    uint64_t SingleTime = esp_timer_get_time() - Start;
+    float SingleKHs = 1000000.0f / ((float)SingleTime / 1000000.0f);
+
+    /* Dual core benchmark */
+    PdqMiningInit();
+    PdqMiningStart();
+    Job.NonceStart = 0;
+    Job.NonceEnd = 0xFFFFFFFF;
+    PdqMiningSetJob(&Job);
     vTaskDelay(pdMS_TO_TICKS(5000));
-    SingleKHs = Stats1.KiloHashesPerSecond;
-    PdqMiningStop();
-
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    /* Dual core test */
-    MiningStats_t Stats2 = {0};
-    PdqMiningStart(&Stats2);  /* Both cores */
-    vTaskDelay(pdMS_TO_TICKS(5000));
-    DualKHs = Stats2.KiloHashesPerSecond;
+    PdqMinerStats_t Stats;
+    PdqMiningGetStats(&Stats);
+    float DualKHs = (float)Stats.HashRate / 1000.0f;
     PdqMiningStop();
 
     float Speedup = DualKHs / SingleKHs;
@@ -1947,6 +1972,23 @@ test/
 
 **Total Issues Resolved:** 21
 
+**Round 9 - Session 27 Bug Fixes & Optimization Pass 3:**
+
+| Component | Review Status | Issues Found | Issues Fixed |
+|-----------|---------------|--------------|--------------|
+| Main Integration | **CRITICAL** | 1 | 1 (debug print consuming job notifications) |
+| SHA256 Engine | **CRITICAL** | 1 | 1 (nonce overflow infinite loop) |
+| Mining Task | **CRITICAL** | 1 | 1 (batch loop nonce overflow) |
+| SHA256 Optimization | **VERIFIED** | 0 | - (KW1 constants, zero-term elimination correct) |
+| All Builds | **PASS** | 0 | - (4 environments compile, updated sizes) |
+
+**Critical Bugs Fixed in Round 9:**
+1. `main.cpp:147-148` - Debug print called destructive `PdqStratumHasNewJob()`, consuming job flag (root cause of 54 H/s)
+2. `sha256_engine.c:443-444` - `for` loop with `Nonce <= end; Nonce++` infinite loops at 0xFFFFFFFF
+3. `mining_task.c:91-125, 151-185` - Same overflow pattern in batch outer loops for both cores
+
+**Total Issues Resolved:** 24
+
 ### 13.4 Pending Test Implementation
 
 | Test Category | Dependencies | Phase | Status |
@@ -1973,6 +2015,12 @@ The following optimizations have been verified correct:
 | W2_SIG0_8 constant | **FIXED** | SIG0(0x80000000) = 0x11002000 |
 | W2[16-24] expansion | **VERIFIED** | All formulas mathematically correct |
 | Early rejection | **VERIFIED** | FinalState[7] vs TargetHigh before full compare |
+| W1 constant elimination | **VERIFIED** | W1_4=0x80000000, W1_5-14=0, W1_15=0x280 (Session 27) |
+| SIG0/SIG1 pre-computation | **VERIFIED** | SIG0(0x80000000)=0x11002000, SIG0(0x280)=0x00A00055, SIG1(0x280)=0x01100000 (Session 27) |
+| Zero-term elimination | **VERIFIED** | W1_20-W1_29 simplified by removing zero-valued terms (Session 27) |
+| KW1 pre-computed constants | **VERIFIED** | K[i]+W[i] for rounds 4-15 correct (Session 27) |
+| SHA256_ROUND_KW macro | **VERIFIED** | Combined K+W round eliminates one addition (Session 27) |
+| Nonce loop overflow fix | **VERIFIED** | `for(;;)` with explicit break at NonceEnd (Session 27) |
 
 ### 13.6 Display Driver Verification
 

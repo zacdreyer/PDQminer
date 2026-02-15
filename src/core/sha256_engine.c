@@ -8,6 +8,11 @@
 #include "sha256_engine.h"
 #include <string.h>
 
+/* Use -Os for the SHA256 engine: on Xtensa LX6 (16 registers with windows),
+ * -O3 causes massive register spilling in the unrolled SHA256 rounds.
+ * Also disable -funroll-loops which survives the pragma from the command line. */
+#pragma GCC optimize("Os,no-unroll-loops")
+
 #if defined(ESP_PLATFORM)
 #include "esp_attr.h"
 #define PDQ_USE_HW_SHA 0
@@ -43,22 +48,13 @@ static PDQ_DRAM_ATTR const uint32_t K[64] = {
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
-static PDQ_DRAM_ATTR const uint32_t K2_8  = 0xd807aa98 + 0x80000000;
-static PDQ_DRAM_ATTR const uint32_t K2_9  = 0x12835b01;
-static PDQ_DRAM_ATTR const uint32_t K2_10 = 0x243185be;
-static PDQ_DRAM_ATTR const uint32_t K2_11 = 0x550c7dc3;
-static PDQ_DRAM_ATTR const uint32_t K2_12 = 0x72be5d74;
-static PDQ_DRAM_ATTR const uint32_t K2_13 = 0x80deb1fe;
-static PDQ_DRAM_ATTR const uint32_t K2_14 = 0x9bdc06a7;
-static PDQ_DRAM_ATTR const uint32_t K2_15 = 0xc19bf174 + 256;
-
-static const uint32_t H_INIT[8] = {
+static PDQ_DRAM_ATTR const uint32_t H_INIT[8] = {
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
     0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
 };
 
 #define ROTR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
-#define CH(x, y, z) (((x) & (y)) ^ (~(x) & (z)))
+#define CH(x, y, z) ((z) ^ ((x) & ((y) ^ (z))))
 #define MAJ(x, y, z) (((x) & (y)) | ((z) & ((x) ^ (y))))
 #define EP0(x) (ROTR(x, 2) ^ ROTR(x, 13) ^ ROTR(x, 22))
 #define EP1(x) (ROTR(x, 6) ^ ROTR(x, 11) ^ ROTR(x, 25))
@@ -79,6 +75,19 @@ static const uint32_t H_INIT[8] = {
     (d) = (c); (c) = (b); (b) = (a); (a) = t1 + t2; \
 } while(0)
 
+/* Mining-optimized round macro with rotating A[] array positions.
+ * Only updates d and h, eliminating 6 unnecessary variable shifts per round.
+ * Based on Blockstream Jade / NerdMiner approach. */
+#define MINE_ROUND(a, b, c, d, e, f, g, h, x, k) do { \
+    uint32_t _t1 = (h) + EP1(e) + CH(e, f, g) + (k) + (x); \
+    uint32_t _t2 = EP0(a) + MAJ(a, b, c); \
+    (d) += _t1; \
+    (h) = _t1 + _t2; \
+} while(0)
+
+/* Just-in-time W expansion macro - computes W[t] from prior W values */
+#define MINE_W(W, t) ((W)[t] = SIG1((W)[(t) - 2]) + (W)[(t) - 7] + SIG0((W)[(t) - 15]) + (W)[(t) - 16])
+
 static inline uint32_t ReadBe32(const uint8_t* p_Data) {
     return ((uint32_t)p_Data[0] << 24) | ((uint32_t)p_Data[1] << 16) |
            ((uint32_t)p_Data[2] << 8) | (uint32_t)p_Data[3];
@@ -98,7 +107,7 @@ static inline void WriteLe32(uint8_t* p_Data, uint32_t Value) {
     p_Data[3] = (uint8_t)(Value >> 24);
 }
 
-PDQ_IRAM_ATTR static void Sha256Transform(uint32_t* p_State, const uint8_t* p_Block) {
+static void Sha256Transform(uint32_t* p_State, const uint8_t* p_Block) {
     register uint32_t a, b, c, d, e, f, g, h;
     uint32_t W[64];
 
@@ -305,381 +314,489 @@ PDQ_IRAM_ATTR static bool CheckTarget(const uint32_t* p_Hash, const uint32_t* p_
     return true;
 }
 
-PDQ_IRAM_ATTR static void Sha256TransformW(uint32_t* p_State, const uint32_t* p_W) {
-    register uint32_t a, b, c, d, e, f, g, h;
+/* ============================================================================
+ * Mining-optimized SHA256d - NerdMiner/Blockstream Jade architecture.
+ *
+ * Split into three functions to leverage Xtensa register windows:
+ *   PdqBake()         - Pre-compute nonce-independent state (once per job batch)
+ *   PdqSha256dBaked() - Per-nonce double SHA256 with baked state
+ *   PdqSha256MineBlock() - Outer loop calling the above
+ *
+ * On ESP32's Xtensa LX6, each function call rotates the 16-register window,
+ * giving the callee a fresh register context. This dramatically reduces
+ * register spilling compared to a single monolithic function.
+ * ============================================================================ */
 
-    a = p_State[0]; b = p_State[1]; c = p_State[2]; d = p_State[3];
-    e = p_State[4]; f = p_State[5]; g = p_State[6]; h = p_State[7];
+/* Bake context: pre-computed nonce-independent values.
+ * bake[0..2]  = W[0..2] (block tail words, constant per job)
+ * bake[3]     = pre-computed W[16]
+ * bake[4]     = pre-computed W[17]
+ * bake[5..12] = SHA256 state A[0..7] after rounds 0-2
+ * bake[13]    = partial round 3 T1 (without nonce-dependent W3)
+ * bake[14]    = round 3 T2 */
+#define BAKE_SIZE 15
 
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[0], p_W[0]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[1], p_W[1]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[2], p_W[2]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[3], p_W[3]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[4], p_W[4]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[5], p_W[5]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[6], p_W[6]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[7], p_W[7]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[8], p_W[8]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[9], p_W[9]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[10], p_W[10]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[11], p_W[11]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[12], p_W[12]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[13], p_W[13]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[14], p_W[14]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[15], p_W[15]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[16], p_W[16]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[17], p_W[17]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[18], p_W[18]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[19], p_W[19]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[20], p_W[20]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[21], p_W[21]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[22], p_W[22]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[23], p_W[23]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[24], p_W[24]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[25], p_W[25]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[26], p_W[26]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[27], p_W[27]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[28], p_W[28]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[29], p_W[29]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[30], p_W[30]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[31], p_W[31]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[32], p_W[32]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[33], p_W[33]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[34], p_W[34]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[35], p_W[35]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[36], p_W[36]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[37], p_W[37]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[38], p_W[38]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[39], p_W[39]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[40], p_W[40]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[41], p_W[41]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[42], p_W[42]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[43], p_W[43]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[44], p_W[44]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[45], p_W[45]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[46], p_W[46]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[47], p_W[47]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[48], p_W[48]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[49], p_W[49]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[50], p_W[50]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[51], p_W[51]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[52], p_W[52]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[53], p_W[53]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[54], p_W[54]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[55], p_W[55]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[56], p_W[56]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[57], p_W[57]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[58], p_W[58]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[59], p_W[59]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[60], p_W[60]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[61], p_W[61]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[62], p_W[62]);
-    SHA256_ROUND(a,b,c,d,e,f,g,h, K[63], p_W[63]);
+PDQ_IRAM_ATTR __attribute__((noinline)) static void PdqBake(const uint32_t* p_Midstate, const uint8_t* p_BlockTail, uint32_t* p_Bake) {
+    uint32_t temp1, temp2;
 
-    p_State[0] += a; p_State[1] += b; p_State[2] += c; p_State[3] += d;
-    p_State[4] += e; p_State[5] += f; p_State[6] += g; p_State[7] += h;
+    p_Bake[0] = ReadBe32(p_BlockTail);
+    p_Bake[1] = ReadBe32(p_BlockTail + 4);
+    p_Bake[2] = ReadBe32(p_BlockTail + 8);
+
+    /* Pre-compute W[16] = SIG1(0) + 0 + SIG0(W1) + W0
+     * Pre-compute W[17] = SIG1(640) + 0 + SIG0(W2) + W1
+     * (W[14]=0, W[15]=640=0x280, W[9]=0, W[10]=0) */
+    p_Bake[3] = SIG1(0) + 0 + SIG0(p_Bake[1]) + p_Bake[0];
+    p_Bake[4] = SIG1(640) + 0 + SIG0(p_Bake[2]) + p_Bake[1];
+
+    /* Run rounds 0-2 with midstate as initial state */
+    uint32_t* a = p_Bake + 5;
+    a[0] = p_Midstate[0]; a[1] = p_Midstate[1];
+    a[2] = p_Midstate[2]; a[3] = p_Midstate[3];
+    a[4] = p_Midstate[4]; a[5] = p_Midstate[5];
+    a[6] = p_Midstate[6]; a[7] = p_Midstate[7];
+
+    MINE_ROUND(a[0],a[1],a[2],a[3],a[4],a[5],a[6],a[7], p_Bake[0], K[0]);
+    MINE_ROUND(a[7],a[0],a[1],a[2],a[3],a[4],a[5],a[6], p_Bake[1], K[1]);
+    MINE_ROUND(a[6],a[7],a[0],a[1],a[2],a[3],a[4],a[5], p_Bake[2], K[2]);
+
+    /* Partial round 3: pre-compute T1 base (without W3) and T2 */
+    p_Bake[13] = a[4] + EP1(a[1]) + CH(a[1],a[2],a[3]) + K[3];
+    p_Bake[14] = EP0(a[5]) + MAJ(a[5],a[6],a[7]);
 }
 
-__attribute__((hot)) PDQ_IRAM_ATTR PdqError_t PdqSha256MineBlock(const PdqMiningJob_t* p_Job, uint32_t* p_Nonce, bool* p_Found) {
+PDQ_IRAM_ATTR __attribute__((noinline)) static bool PdqSha256dBaked(const uint32_t* p_Midstate, const uint8_t* p_BlockTail,
+                                           const uint32_t* p_Bake, uint32_t* p_FinalState) {
+    uint32_t temp1, temp2;
+
+    /* === First hash: SHA256 of block tail with midstate === */
+    uint32_t W[64] = { p_Bake[0], p_Bake[1], p_Bake[2], ReadBe32(p_BlockTail + 12),
+                       0x80000000, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                       0, 640 };
+    W[16] = p_Bake[3];
+    W[17] = p_Bake[4];
+
+    /* Load baked state (after rounds 0-2) */
+    const uint32_t* ba = p_Bake + 5;
+    uint32_t A[8] = { ba[0], ba[1], ba[2], ba[3],
+                      ba[4], ba[5], ba[6], ba[7] };
+
+    /* Complete round 3 with nonce-dependent W3 */
+    temp1 = p_Bake[13] + W[3];
+    temp2 = p_Bake[14];
+    A[0] += temp1;
+    A[4] = temp1 + temp2;
+
+    /* Rounds 4-15 */
+    MINE_ROUND(A[4],A[5],A[6],A[7],A[0],A[1],A[2],A[3], W[4], K[4]);
+    MINE_ROUND(A[3],A[4],A[5],A[6],A[7],A[0],A[1],A[2], W[5], K[5]);
+    MINE_ROUND(A[2],A[3],A[4],A[5],A[6],A[7],A[0],A[1], W[6], K[6]);
+    MINE_ROUND(A[1],A[2],A[3],A[4],A[5],A[6],A[7],A[0], W[7], K[7]);
+    MINE_ROUND(A[0],A[1],A[2],A[3],A[4],A[5],A[6],A[7], W[8], K[8]);
+    MINE_ROUND(A[7],A[0],A[1],A[2],A[3],A[4],A[5],A[6], W[9], K[9]);
+    MINE_ROUND(A[6],A[7],A[0],A[1],A[2],A[3],A[4],A[5], W[10], K[10]);
+    MINE_ROUND(A[5],A[6],A[7],A[0],A[1],A[2],A[3],A[4], W[11], K[11]);
+    MINE_ROUND(A[4],A[5],A[6],A[7],A[0],A[1],A[2],A[3], W[12], K[12]);
+    MINE_ROUND(A[3],A[4],A[5],A[6],A[7],A[0],A[1],A[2], W[13], K[13]);
+    MINE_ROUND(A[2],A[3],A[4],A[5],A[6],A[7],A[0],A[1], W[14], K[14]);
+    MINE_ROUND(A[1],A[2],A[3],A[4],A[5],A[6],A[7],A[0], W[15], K[15]);
+
+    /* Rounds 16-17 (pre-computed W) */
+    MINE_ROUND(A[0],A[1],A[2],A[3],A[4],A[5],A[6],A[7], W[16], K[16]);
+    MINE_ROUND(A[7],A[0],A[1],A[2],A[3],A[4],A[5],A[6], W[17], K[17]);
+
+    /* Rounds 18-63 (just-in-time W expansion) */
+    MINE_ROUND(A[6],A[7],A[0],A[1],A[2],A[3],A[4],A[5], MINE_W(W,18), K[18]);
+    MINE_ROUND(A[5],A[6],A[7],A[0],A[1],A[2],A[3],A[4], MINE_W(W,19), K[19]);
+    MINE_ROUND(A[4],A[5],A[6],A[7],A[0],A[1],A[2],A[3], MINE_W(W,20), K[20]);
+    MINE_ROUND(A[3],A[4],A[5],A[6],A[7],A[0],A[1],A[2], MINE_W(W,21), K[21]);
+    MINE_ROUND(A[2],A[3],A[4],A[5],A[6],A[7],A[0],A[1], MINE_W(W,22), K[22]);
+    MINE_ROUND(A[1],A[2],A[3],A[4],A[5],A[6],A[7],A[0], MINE_W(W,23), K[23]);
+    MINE_ROUND(A[0],A[1],A[2],A[3],A[4],A[5],A[6],A[7], MINE_W(W,24), K[24]);
+    MINE_ROUND(A[7],A[0],A[1],A[2],A[3],A[4],A[5],A[6], MINE_W(W,25), K[25]);
+    MINE_ROUND(A[6],A[7],A[0],A[1],A[2],A[3],A[4],A[5], MINE_W(W,26), K[26]);
+    MINE_ROUND(A[5],A[6],A[7],A[0],A[1],A[2],A[3],A[4], MINE_W(W,27), K[27]);
+    MINE_ROUND(A[4],A[5],A[6],A[7],A[0],A[1],A[2],A[3], MINE_W(W,28), K[28]);
+    MINE_ROUND(A[3],A[4],A[5],A[6],A[7],A[0],A[1],A[2], MINE_W(W,29), K[29]);
+    MINE_ROUND(A[2],A[3],A[4],A[5],A[6],A[7],A[0],A[1], MINE_W(W,30), K[30]);
+    MINE_ROUND(A[1],A[2],A[3],A[4],A[5],A[6],A[7],A[0], MINE_W(W,31), K[31]);
+    MINE_ROUND(A[0],A[1],A[2],A[3],A[4],A[5],A[6],A[7], MINE_W(W,32), K[32]);
+    MINE_ROUND(A[7],A[0],A[1],A[2],A[3],A[4],A[5],A[6], MINE_W(W,33), K[33]);
+    MINE_ROUND(A[6],A[7],A[0],A[1],A[2],A[3],A[4],A[5], MINE_W(W,34), K[34]);
+    MINE_ROUND(A[5],A[6],A[7],A[0],A[1],A[2],A[3],A[4], MINE_W(W,35), K[35]);
+    MINE_ROUND(A[4],A[5],A[6],A[7],A[0],A[1],A[2],A[3], MINE_W(W,36), K[36]);
+    MINE_ROUND(A[3],A[4],A[5],A[6],A[7],A[0],A[1],A[2], MINE_W(W,37), K[37]);
+    MINE_ROUND(A[2],A[3],A[4],A[5],A[6],A[7],A[0],A[1], MINE_W(W,38), K[38]);
+    MINE_ROUND(A[1],A[2],A[3],A[4],A[5],A[6],A[7],A[0], MINE_W(W,39), K[39]);
+    MINE_ROUND(A[0],A[1],A[2],A[3],A[4],A[5],A[6],A[7], MINE_W(W,40), K[40]);
+    MINE_ROUND(A[7],A[0],A[1],A[2],A[3],A[4],A[5],A[6], MINE_W(W,41), K[41]);
+    MINE_ROUND(A[6],A[7],A[0],A[1],A[2],A[3],A[4],A[5], MINE_W(W,42), K[42]);
+    MINE_ROUND(A[5],A[6],A[7],A[0],A[1],A[2],A[3],A[4], MINE_W(W,43), K[43]);
+    MINE_ROUND(A[4],A[5],A[6],A[7],A[0],A[1],A[2],A[3], MINE_W(W,44), K[44]);
+    MINE_ROUND(A[3],A[4],A[5],A[6],A[7],A[0],A[1],A[2], MINE_W(W,45), K[45]);
+    MINE_ROUND(A[2],A[3],A[4],A[5],A[6],A[7],A[0],A[1], MINE_W(W,46), K[46]);
+    MINE_ROUND(A[1],A[2],A[3],A[4],A[5],A[6],A[7],A[0], MINE_W(W,47), K[47]);
+    MINE_ROUND(A[0],A[1],A[2],A[3],A[4],A[5],A[6],A[7], MINE_W(W,48), K[48]);
+    MINE_ROUND(A[7],A[0],A[1],A[2],A[3],A[4],A[5],A[6], MINE_W(W,49), K[49]);
+    MINE_ROUND(A[6],A[7],A[0],A[1],A[2],A[3],A[4],A[5], MINE_W(W,50), K[50]);
+    MINE_ROUND(A[5],A[6],A[7],A[0],A[1],A[2],A[3],A[4], MINE_W(W,51), K[51]);
+    MINE_ROUND(A[4],A[5],A[6],A[7],A[0],A[1],A[2],A[3], MINE_W(W,52), K[52]);
+    MINE_ROUND(A[3],A[4],A[5],A[6],A[7],A[0],A[1],A[2], MINE_W(W,53), K[53]);
+    MINE_ROUND(A[2],A[3],A[4],A[5],A[6],A[7],A[0],A[1], MINE_W(W,54), K[54]);
+    MINE_ROUND(A[1],A[2],A[3],A[4],A[5],A[6],A[7],A[0], MINE_W(W,55), K[55]);
+    MINE_ROUND(A[0],A[1],A[2],A[3],A[4],A[5],A[6],A[7], MINE_W(W,56), K[56]);
+    MINE_ROUND(A[7],A[0],A[1],A[2],A[3],A[4],A[5],A[6], MINE_W(W,57), K[57]);
+    MINE_ROUND(A[6],A[7],A[0],A[1],A[2],A[3],A[4],A[5], MINE_W(W,58), K[58]);
+    MINE_ROUND(A[5],A[6],A[7],A[0],A[1],A[2],A[3],A[4], MINE_W(W,59), K[59]);
+    MINE_ROUND(A[4],A[5],A[6],A[7],A[0],A[1],A[2],A[3], MINE_W(W,60), K[60]);
+    MINE_ROUND(A[3],A[4],A[5],A[6],A[7],A[0],A[1],A[2], MINE_W(W,61), K[61]);
+    MINE_ROUND(A[2],A[3],A[4],A[5],A[6],A[7],A[0],A[1], MINE_W(W,62), K[62]);
+    MINE_ROUND(A[1],A[2],A[3],A[4],A[5],A[6],A[7],A[0], MINE_W(W,63), K[63]);
+
+    /* Finalize first hash */
+    W[0] = p_Midstate[0] + A[0]; W[1] = p_Midstate[1] + A[1];
+    W[2] = p_Midstate[2] + A[2]; W[3] = p_Midstate[3] + A[3];
+    W[4] = p_Midstate[4] + A[4]; W[5] = p_Midstate[5] + A[5];
+    W[6] = p_Midstate[6] + A[6]; W[7] = p_Midstate[7] + A[7];
+    W[8] = 0x80000000; W[9] = 0; W[10] = 0; W[11] = 0;
+    W[12] = 0; W[13] = 0; W[14] = 0; W[15] = 256;
+
+    /* === Second hash: SHA256(intermediate_hash) === */
+    A[0] = 0x6a09e667; A[1] = 0xbb67ae85; A[2] = 0x3c6ef372; A[3] = 0xa54ff53a;
+    A[4] = 0x510e527f; A[5] = 0x9b05688c; A[6] = 0x1f83d9ab; A[7] = 0x5be0cd19;
+
+    /* Second hash rounds 0-15 */
+    MINE_ROUND(A[0],A[1],A[2],A[3],A[4],A[5],A[6],A[7], W[0], K[0]);
+    MINE_ROUND(A[7],A[0],A[1],A[2],A[3],A[4],A[5],A[6], W[1], K[1]);
+    MINE_ROUND(A[6],A[7],A[0],A[1],A[2],A[3],A[4],A[5], W[2], K[2]);
+    MINE_ROUND(A[5],A[6],A[7],A[0],A[1],A[2],A[3],A[4], W[3], K[3]);
+    MINE_ROUND(A[4],A[5],A[6],A[7],A[0],A[1],A[2],A[3], W[4], K[4]);
+    MINE_ROUND(A[3],A[4],A[5],A[6],A[7],A[0],A[1],A[2], W[5], K[5]);
+    MINE_ROUND(A[2],A[3],A[4],A[5],A[6],A[7],A[0],A[1], W[6], K[6]);
+    MINE_ROUND(A[1],A[2],A[3],A[4],A[5],A[6],A[7],A[0], W[7], K[7]);
+    MINE_ROUND(A[0],A[1],A[2],A[3],A[4],A[5],A[6],A[7], W[8], K[8]);
+    MINE_ROUND(A[7],A[0],A[1],A[2],A[3],A[4],A[5],A[6], W[9], K[9]);
+    MINE_ROUND(A[6],A[7],A[0],A[1],A[2],A[3],A[4],A[5], W[10], K[10]);
+    MINE_ROUND(A[5],A[6],A[7],A[0],A[1],A[2],A[3],A[4], W[11], K[11]);
+    MINE_ROUND(A[4],A[5],A[6],A[7],A[0],A[1],A[2],A[3], W[12], K[12]);
+    MINE_ROUND(A[3],A[4],A[5],A[6],A[7],A[0],A[1],A[2], W[13], K[13]);
+    MINE_ROUND(A[2],A[3],A[4],A[5],A[6],A[7],A[0],A[1], W[14], K[14]);
+    MINE_ROUND(A[1],A[2],A[3],A[4],A[5],A[6],A[7],A[0], W[15], K[15]);
+
+    /* Second hash rounds 16-56 */
+    MINE_ROUND(A[0],A[1],A[2],A[3],A[4],A[5],A[6],A[7], MINE_W(W,16), K[16]);
+    MINE_ROUND(A[7],A[0],A[1],A[2],A[3],A[4],A[5],A[6], MINE_W(W,17), K[17]);
+    MINE_ROUND(A[6],A[7],A[0],A[1],A[2],A[3],A[4],A[5], MINE_W(W,18), K[18]);
+    MINE_ROUND(A[5],A[6],A[7],A[0],A[1],A[2],A[3],A[4], MINE_W(W,19), K[19]);
+    MINE_ROUND(A[4],A[5],A[6],A[7],A[0],A[1],A[2],A[3], MINE_W(W,20), K[20]);
+    MINE_ROUND(A[3],A[4],A[5],A[6],A[7],A[0],A[1],A[2], MINE_W(W,21), K[21]);
+    MINE_ROUND(A[2],A[3],A[4],A[5],A[6],A[7],A[0],A[1], MINE_W(W,22), K[22]);
+    MINE_ROUND(A[1],A[2],A[3],A[4],A[5],A[6],A[7],A[0], MINE_W(W,23), K[23]);
+    MINE_ROUND(A[0],A[1],A[2],A[3],A[4],A[5],A[6],A[7], MINE_W(W,24), K[24]);
+    MINE_ROUND(A[7],A[0],A[1],A[2],A[3],A[4],A[5],A[6], MINE_W(W,25), K[25]);
+    MINE_ROUND(A[6],A[7],A[0],A[1],A[2],A[3],A[4],A[5], MINE_W(W,26), K[26]);
+    MINE_ROUND(A[5],A[6],A[7],A[0],A[1],A[2],A[3],A[4], MINE_W(W,27), K[27]);
+    MINE_ROUND(A[4],A[5],A[6],A[7],A[0],A[1],A[2],A[3], MINE_W(W,28), K[28]);
+    MINE_ROUND(A[3],A[4],A[5],A[6],A[7],A[0],A[1],A[2], MINE_W(W,29), K[29]);
+    MINE_ROUND(A[2],A[3],A[4],A[5],A[6],A[7],A[0],A[1], MINE_W(W,30), K[30]);
+    MINE_ROUND(A[1],A[2],A[3],A[4],A[5],A[6],A[7],A[0], MINE_W(W,31), K[31]);
+    MINE_ROUND(A[0],A[1],A[2],A[3],A[4],A[5],A[6],A[7], MINE_W(W,32), K[32]);
+    MINE_ROUND(A[7],A[0],A[1],A[2],A[3],A[4],A[5],A[6], MINE_W(W,33), K[33]);
+    MINE_ROUND(A[6],A[7],A[0],A[1],A[2],A[3],A[4],A[5], MINE_W(W,34), K[34]);
+    MINE_ROUND(A[5],A[6],A[7],A[0],A[1],A[2],A[3],A[4], MINE_W(W,35), K[35]);
+    MINE_ROUND(A[4],A[5],A[6],A[7],A[0],A[1],A[2],A[3], MINE_W(W,36), K[36]);
+    MINE_ROUND(A[3],A[4],A[5],A[6],A[7],A[0],A[1],A[2], MINE_W(W,37), K[37]);
+    MINE_ROUND(A[2],A[3],A[4],A[5],A[6],A[7],A[0],A[1], MINE_W(W,38), K[38]);
+    MINE_ROUND(A[1],A[2],A[3],A[4],A[5],A[6],A[7],A[0], MINE_W(W,39), K[39]);
+    MINE_ROUND(A[0],A[1],A[2],A[3],A[4],A[5],A[6],A[7], MINE_W(W,40), K[40]);
+    MINE_ROUND(A[7],A[0],A[1],A[2],A[3],A[4],A[5],A[6], MINE_W(W,41), K[41]);
+    MINE_ROUND(A[6],A[7],A[0],A[1],A[2],A[3],A[4],A[5], MINE_W(W,42), K[42]);
+    MINE_ROUND(A[5],A[6],A[7],A[0],A[1],A[2],A[3],A[4], MINE_W(W,43), K[43]);
+    MINE_ROUND(A[4],A[5],A[6],A[7],A[0],A[1],A[2],A[3], MINE_W(W,44), K[44]);
+    MINE_ROUND(A[3],A[4],A[5],A[6],A[7],A[0],A[1],A[2], MINE_W(W,45), K[45]);
+    MINE_ROUND(A[2],A[3],A[4],A[5],A[6],A[7],A[0],A[1], MINE_W(W,46), K[46]);
+    MINE_ROUND(A[1],A[2],A[3],A[4],A[5],A[6],A[7],A[0], MINE_W(W,47), K[47]);
+    MINE_ROUND(A[0],A[1],A[2],A[3],A[4],A[5],A[6],A[7], MINE_W(W,48), K[48]);
+    MINE_ROUND(A[7],A[0],A[1],A[2],A[3],A[4],A[5],A[6], MINE_W(W,49), K[49]);
+    MINE_ROUND(A[6],A[7],A[0],A[1],A[2],A[3],A[4],A[5], MINE_W(W,50), K[50]);
+    MINE_ROUND(A[5],A[6],A[7],A[0],A[1],A[2],A[3],A[4], MINE_W(W,51), K[51]);
+    MINE_ROUND(A[4],A[5],A[6],A[7],A[0],A[1],A[2],A[3], MINE_W(W,52), K[52]);
+    MINE_ROUND(A[3],A[4],A[5],A[6],A[7],A[0],A[1],A[2], MINE_W(W,53), K[53]);
+    MINE_ROUND(A[2],A[3],A[4],A[5],A[6],A[7],A[0],A[1], MINE_W(W,54), K[54]);
+    MINE_ROUND(A[1],A[2],A[3],A[4],A[5],A[6],A[7],A[0], MINE_W(W,55), K[55]);
+    MINE_ROUND(A[0],A[1],A[2],A[3],A[4],A[5],A[6],A[7], MINE_W(W,56), K[56]);
+
+    /* Deferred rounds 57-60: only compute d += t1, defer h = t1 + t2.
+     * This enables early termination before computing rounds 61-63. */
+
+    /* Round 57 */
+    uint32_t m1 = A[6] + EP1(A[3]) + CH(A[3],A[4],A[5]) + K[57] + MINE_W(W,57);
+    A[2] += m1;
+    uint32_t d57_a1 = A[1];
+
+    /* Round 58 */
+    uint32_t z1 = A[5] + EP1(A[2]) + CH(A[2],A[3],A[4]) + K[58] + MINE_W(W,58);
+    uint32_t d58_a0 = A[0];
+    A[1] += z1;
+
+    /* Round 59 */
+    uint32_t y1 = A[4] + EP1(A[1]) + CH(A[1],A[2],A[3]) + K[59] + MINE_W(W,59);
+    A[0] += y1;
+
+    /* Round 60 */
+    uint32_t x1 = A[3] + EP1(A[0]) + CH(A[0],A[1],A[2]) + K[60] + MINE_W(W,60);
+    uint32_t a7 = A[7] + x1;
+
+    /* Early termination: for a valid hash, hash[7] = 0x5be0cd19 + A[7].
+     * Lower 16 bits of A[7] must be 0x32E7. Rejects ~99.998%. */
+    if ((a7 & 0xFFFF) != 0x32E7)
+        return false;
+
+    /* Post-compute deferred h values for rounds 57-60 */
+    { uint32_t m2 = EP0(A[7]) + MAJ(A[7], d58_a0, d57_a1); A[6] = m1 + m2; }
+    { uint32_t z2 = EP0(A[6]) + MAJ(A[6], A[7], d58_a0); A[5] = z1 + z2; }
+    { uint32_t y2 = EP0(A[5]) + MAJ(A[5], A[6], A[7]); A[4] = y1 + y2; }
+    A[7] = a7;
+    { uint32_t x2 = EP0(A[4]) + MAJ(A[4], A[5], A[6]); A[3] = x1 + x2; }
+
+    /* Rounds 61-63 */
+    MINE_ROUND(A[3],A[4],A[5],A[6],A[7],A[0],A[1],A[2], MINE_W(W,61), K[61]);
+    MINE_ROUND(A[2],A[3],A[4],A[5],A[6],A[7],A[0],A[1], MINE_W(W,62), K[62]);
+    MINE_ROUND(A[1],A[2],A[3],A[4],A[5],A[6],A[7],A[0], MINE_W(W,63), K[63]);
+
+    /* Compute final state */
+    p_FinalState[0] = 0x6a09e667 + A[0];
+    p_FinalState[1] = 0xbb67ae85 + A[1];
+    p_FinalState[2] = 0x3c6ef372 + A[2];
+    p_FinalState[3] = 0xa54ff53a + A[3];
+    p_FinalState[4] = 0x510e527f + A[4];
+    p_FinalState[5] = 0x9b05688c + A[5];
+    p_FinalState[6] = 0x1f83d9ab + A[6];
+    p_FinalState[7] = 0x5be0cd19 + A[7];
+
+    return true;
+}
+
+PDQ_IRAM_ATTR PdqError_t PdqSha256MineBlock(const PdqMiningJob_t* p_Job, uint32_t* p_Nonce, bool* p_Found) {
     if (p_Job == NULL || p_Nonce == NULL || p_Found == NULL) return PdqErrorInvalidParam;
 
     *p_Found = false;
 
+    /* Read midstate as uint32_t (once per batch) */
     uint32_t MidState[8];
     for (int i = 0; i < 8; i++) {
         MidState[i] = ReadBe32(p_Job->Midstate + i * 4);
     }
 
-    uint32_t W1_0 = ReadBe32(p_Job->BlockTail);
-    uint32_t W1_1 = ReadBe32(p_Job->BlockTail + 4);
-    uint32_t W1_2 = ReadBe32(p_Job->BlockTail + 8);
-    uint32_t W1_4 = ReadBe32(p_Job->BlockTail + 16);
-    uint32_t W1_5 = ReadBe32(p_Job->BlockTail + 20);
-    uint32_t W1_6 = ReadBe32(p_Job->BlockTail + 24);
-    uint32_t W1_7 = ReadBe32(p_Job->BlockTail + 28);
-    uint32_t W1_8 = ReadBe32(p_Job->BlockTail + 32);
-    uint32_t W1_9 = ReadBe32(p_Job->BlockTail + 36);
-    uint32_t W1_10 = ReadBe32(p_Job->BlockTail + 40);
-    uint32_t W1_11 = ReadBe32(p_Job->BlockTail + 44);
-    uint32_t W1_12 = ReadBe32(p_Job->BlockTail + 48);
-    uint32_t W1_13 = ReadBe32(p_Job->BlockTail + 52);
-    uint32_t W1_14 = ReadBe32(p_Job->BlockTail + 56);
-    uint32_t W1_15 = ReadBe32(p_Job->BlockTail + 60);
+    /* Bake nonce-independent state (once per batch) */
+    uint32_t Bake[BAKE_SIZE];
+    PdqBake(MidState, p_Job->BlockTail, Bake);
 
-    uint32_t W1Pre16 = SIG1(W1_14) + W1_9 + SIG0(W1_1) + W1_0;
-    uint32_t W1Pre17 = SIG1(W1_15) + W1_10 + SIG0(W1_2) + W1_1;
-    uint32_t W1Pre18Base = SIG1(W1Pre16) + W1_11 + W1_2;
-    uint32_t W1Pre19Base = SIG1(W1Pre17) + W1_12;
+    /* Prepare block tail with nonce position for per-nonce function.
+     * BlockTail bytes 12-15 contain the nonce in big-endian. */
+    uint8_t BlockTail[16];
+    memcpy(BlockTail, p_Job->BlockTail, 16);
 
     uint32_t TargetHigh = p_Job->Target[0];
 
-    static const uint32_t W2_8 = 0x80000000;
-    static const uint32_t W2_15 = 256;
-    static const uint32_t W2_SIG1_15 = 0x00A00000;
-    static const uint32_t W2_SIG0_8 = 0x11002000;
+    uint32_t Nonce = p_Job->NonceStart;
+    for (;;) {
+        /* Write nonce into block tail (big-endian) */
+        WriteBe32(BlockTail + 12, Nonce);
 
-    for (uint32_t Nonce = p_Job->NonceStart; Nonce <= p_Job->NonceEnd; Nonce++) {
-        uint32_t W1_3 = __builtin_bswap32(Nonce);
-        uint32_t Sig0_3 = SIG0(W1_3);
-
-        uint32_t W1_16 = W1Pre16;
-        uint32_t W1_17 = W1Pre17;
-        uint32_t W1_18 = W1Pre18Base + Sig0_3;
-        uint32_t W1_19 = W1Pre19Base + SIG0(W1_4) + W1_3;
-        uint32_t W1_20 = SIG1(W1_18) + W1_13 + SIG0(W1_5) + W1_4;
-        uint32_t W1_21 = SIG1(W1_19) + W1_14 + SIG0(W1_6) + W1_5;
-        uint32_t W1_22 = SIG1(W1_20) + W1_15 + SIG0(W1_7) + W1_6;
-        uint32_t W1_23 = SIG1(W1_21) + W1_16 + SIG0(W1_8) + W1_7;
-        uint32_t W1_24 = SIG1(W1_22) + W1_17 + SIG0(W1_9) + W1_8;
-        uint32_t W1_25 = SIG1(W1_23) + W1_18 + SIG0(W1_10) + W1_9;
-        uint32_t W1_26 = SIG1(W1_24) + W1_19 + SIG0(W1_11) + W1_10;
-        uint32_t W1_27 = SIG1(W1_25) + W1_20 + SIG0(W1_12) + W1_11;
-        uint32_t W1_28 = SIG1(W1_26) + W1_21 + SIG0(W1_13) + W1_12;
-        uint32_t W1_29 = SIG1(W1_27) + W1_22 + SIG0(W1_14) + W1_13;
-        uint32_t W1_30 = SIG1(W1_28) + W1_23 + SIG0(W1_15) + W1_14;
-        uint32_t W1_31 = SIG1(W1_29) + W1_24 + SIG0(W1_16) + W1_15;
-        uint32_t W1_32 = SIG1(W1_30) + W1_25 + SIG0(W1_17) + W1_16;
-        uint32_t W1_33 = SIG1(W1_31) + W1_26 + SIG0(W1_18) + W1_17;
-        uint32_t W1_34 = SIG1(W1_32) + W1_27 + SIG0(W1_19) + W1_18;
-        uint32_t W1_35 = SIG1(W1_33) + W1_28 + SIG0(W1_20) + W1_19;
-        uint32_t W1_36 = SIG1(W1_34) + W1_29 + SIG0(W1_21) + W1_20;
-        uint32_t W1_37 = SIG1(W1_35) + W1_30 + SIG0(W1_22) + W1_21;
-        uint32_t W1_38 = SIG1(W1_36) + W1_31 + SIG0(W1_23) + W1_22;
-        uint32_t W1_39 = SIG1(W1_37) + W1_32 + SIG0(W1_24) + W1_23;
-        uint32_t W1_40 = SIG1(W1_38) + W1_33 + SIG0(W1_25) + W1_24;
-        uint32_t W1_41 = SIG1(W1_39) + W1_34 + SIG0(W1_26) + W1_25;
-        uint32_t W1_42 = SIG1(W1_40) + W1_35 + SIG0(W1_27) + W1_26;
-        uint32_t W1_43 = SIG1(W1_41) + W1_36 + SIG0(W1_28) + W1_27;
-        uint32_t W1_44 = SIG1(W1_42) + W1_37 + SIG0(W1_29) + W1_28;
-        uint32_t W1_45 = SIG1(W1_43) + W1_38 + SIG0(W1_30) + W1_29;
-        uint32_t W1_46 = SIG1(W1_44) + W1_39 + SIG0(W1_31) + W1_30;
-        uint32_t W1_47 = SIG1(W1_45) + W1_40 + SIG0(W1_32) + W1_31;
-        uint32_t W1_48 = SIG1(W1_46) + W1_41 + SIG0(W1_33) + W1_32;
-        uint32_t W1_49 = SIG1(W1_47) + W1_42 + SIG0(W1_34) + W1_33;
-        uint32_t W1_50 = SIG1(W1_48) + W1_43 + SIG0(W1_35) + W1_34;
-        uint32_t W1_51 = SIG1(W1_49) + W1_44 + SIG0(W1_36) + W1_35;
-        uint32_t W1_52 = SIG1(W1_50) + W1_45 + SIG0(W1_37) + W1_36;
-        uint32_t W1_53 = SIG1(W1_51) + W1_46 + SIG0(W1_38) + W1_37;
-        uint32_t W1_54 = SIG1(W1_52) + W1_47 + SIG0(W1_39) + W1_38;
-        uint32_t W1_55 = SIG1(W1_53) + W1_48 + SIG0(W1_40) + W1_39;
-        uint32_t W1_56 = SIG1(W1_54) + W1_49 + SIG0(W1_41) + W1_40;
-        uint32_t W1_57 = SIG1(W1_55) + W1_50 + SIG0(W1_42) + W1_41;
-        uint32_t W1_58 = SIG1(W1_56) + W1_51 + SIG0(W1_43) + W1_42;
-        uint32_t W1_59 = SIG1(W1_57) + W1_52 + SIG0(W1_44) + W1_43;
-        uint32_t W1_60 = SIG1(W1_58) + W1_53 + SIG0(W1_45) + W1_44;
-        uint32_t W1_61 = SIG1(W1_59) + W1_54 + SIG0(W1_46) + W1_45;
-        uint32_t W1_62 = SIG1(W1_60) + W1_55 + SIG0(W1_47) + W1_46;
-        uint32_t W1_63 = SIG1(W1_61) + W1_56 + SIG0(W1_48) + W1_47;
-
-        register uint32_t a = MidState[0], b = MidState[1], c = MidState[2], d = MidState[3];
-        register uint32_t e = MidState[4], f = MidState[5], g = MidState[6], h = MidState[7];
-
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[0], W1_0);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[1], W1_1);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[2], W1_2);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[3], W1_3);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[4], W1_4);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[5], W1_5);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[6], W1_6);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[7], W1_7);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[8], W1_8);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[9], W1_9);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[10], W1_10);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[11], W1_11);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[12], W1_12);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[13], W1_13);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[14], W1_14);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[15], W1_15);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[16], W1_16);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[17], W1_17);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[18], W1_18);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[19], W1_19);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[20], W1_20);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[21], W1_21);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[22], W1_22);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[23], W1_23);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[24], W1_24);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[25], W1_25);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[26], W1_26);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[27], W1_27);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[28], W1_28);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[29], W1_29);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[30], W1_30);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[31], W1_31);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[32], W1_32);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[33], W1_33);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[34], W1_34);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[35], W1_35);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[36], W1_36);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[37], W1_37);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[38], W1_38);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[39], W1_39);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[40], W1_40);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[41], W1_41);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[42], W1_42);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[43], W1_43);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[44], W1_44);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[45], W1_45);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[46], W1_46);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[47], W1_47);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[48], W1_48);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[49], W1_49);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[50], W1_50);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[51], W1_51);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[52], W1_52);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[53], W1_53);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[54], W1_54);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[55], W1_55);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[56], W1_56);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[57], W1_57);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[58], W1_58);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[59], W1_59);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[60], W1_60);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[61], W1_61);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[62], W1_62);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[63], W1_63);
-
-        uint32_t S0 = MidState[0] + a, S1 = MidState[1] + b;
-        uint32_t S2 = MidState[2] + c, S3 = MidState[3] + d;
-        uint32_t S4 = MidState[4] + e, S5 = MidState[5] + f;
-        uint32_t S6 = MidState[6] + g, S7 = MidState[7] + h;
-
-        uint32_t W2_16 = SIG0(S1) + S0;
-        uint32_t W2_17 = W2_SIG1_15 + SIG0(S2) + S1;
-        uint32_t W2_18 = SIG1(W2_16) + SIG0(S3) + S2;
-        uint32_t W2_19 = SIG1(W2_17) + SIG0(S4) + S3;
-        uint32_t W2_20 = SIG1(W2_18) + SIG0(S5) + S4;
-        uint32_t W2_21 = SIG1(W2_19) + SIG0(S6) + S5;
-        uint32_t W2_22 = SIG1(W2_20) + W2_15 + SIG0(S7) + S6;
-        uint32_t W2_23 = SIG1(W2_21) + W2_16 + W2_SIG0_8 + S7;
-        uint32_t W2_24 = SIG1(W2_22) + W2_17 + W2_8;
-        uint32_t W2_25 = SIG1(W2_23) + W2_18;
-        uint32_t W2_26 = SIG1(W2_24) + W2_19;
-        uint32_t W2_27 = SIG1(W2_25) + W2_20;
-        uint32_t W2_28 = SIG1(W2_26) + W2_21;
-        uint32_t W2_29 = SIG1(W2_27) + W2_22;
-        uint32_t W2_30 = SIG1(W2_28) + W2_23 + SIG0(W2_15);
-        uint32_t W2_31 = SIG1(W2_29) + W2_24 + SIG0(W2_16) + W2_15;
-        uint32_t W2_32 = SIG1(W2_30) + W2_25 + SIG0(W2_17) + W2_16;
-        uint32_t W2_33 = SIG1(W2_31) + W2_26 + SIG0(W2_18) + W2_17;
-        uint32_t W2_34 = SIG1(W2_32) + W2_27 + SIG0(W2_19) + W2_18;
-        uint32_t W2_35 = SIG1(W2_33) + W2_28 + SIG0(W2_20) + W2_19;
-        uint32_t W2_36 = SIG1(W2_34) + W2_29 + SIG0(W2_21) + W2_20;
-        uint32_t W2_37 = SIG1(W2_35) + W2_30 + SIG0(W2_22) + W2_21;
-        uint32_t W2_38 = SIG1(W2_36) + W2_31 + SIG0(W2_23) + W2_22;
-        uint32_t W2_39 = SIG1(W2_37) + W2_32 + SIG0(W2_24) + W2_23;
-        uint32_t W2_40 = SIG1(W2_38) + W2_33 + SIG0(W2_25) + W2_24;
-        uint32_t W2_41 = SIG1(W2_39) + W2_34 + SIG0(W2_26) + W2_25;
-        uint32_t W2_42 = SIG1(W2_40) + W2_35 + SIG0(W2_27) + W2_26;
-        uint32_t W2_43 = SIG1(W2_41) + W2_36 + SIG0(W2_28) + W2_27;
-        uint32_t W2_44 = SIG1(W2_42) + W2_37 + SIG0(W2_29) + W2_28;
-        uint32_t W2_45 = SIG1(W2_43) + W2_38 + SIG0(W2_30) + W2_29;
-        uint32_t W2_46 = SIG1(W2_44) + W2_39 + SIG0(W2_31) + W2_30;
-        uint32_t W2_47 = SIG1(W2_45) + W2_40 + SIG0(W2_32) + W2_31;
-        uint32_t W2_48 = SIG1(W2_46) + W2_41 + SIG0(W2_33) + W2_32;
-        uint32_t W2_49 = SIG1(W2_47) + W2_42 + SIG0(W2_34) + W2_33;
-        uint32_t W2_50 = SIG1(W2_48) + W2_43 + SIG0(W2_35) + W2_34;
-        uint32_t W2_51 = SIG1(W2_49) + W2_44 + SIG0(W2_36) + W2_35;
-        uint32_t W2_52 = SIG1(W2_50) + W2_45 + SIG0(W2_37) + W2_36;
-        uint32_t W2_53 = SIG1(W2_51) + W2_46 + SIG0(W2_38) + W2_37;
-        uint32_t W2_54 = SIG1(W2_52) + W2_47 + SIG0(W2_39) + W2_38;
-        uint32_t W2_55 = SIG1(W2_53) + W2_48 + SIG0(W2_40) + W2_39;
-        uint32_t W2_56 = SIG1(W2_54) + W2_49 + SIG0(W2_41) + W2_40;
-        uint32_t W2_57 = SIG1(W2_55) + W2_50 + SIG0(W2_42) + W2_41;
-        uint32_t W2_58 = SIG1(W2_56) + W2_51 + SIG0(W2_43) + W2_42;
-        uint32_t W2_59 = SIG1(W2_57) + W2_52 + SIG0(W2_44) + W2_43;
-        uint32_t W2_60 = SIG1(W2_58) + W2_53 + SIG0(W2_45) + W2_44;
-        uint32_t W2_61 = SIG1(W2_59) + W2_54 + SIG0(W2_46) + W2_45;
-        uint32_t W2_62 = SIG1(W2_60) + W2_55 + SIG0(W2_47) + W2_46;
-        uint32_t W2_63 = SIG1(W2_61) + W2_56 + SIG0(W2_48) + W2_47;
-
-        a = H_INIT[0]; b = H_INIT[1]; c = H_INIT[2]; d = H_INIT[3];
-        e = H_INIT[4]; f = H_INIT[5]; g = H_INIT[6]; h = H_INIT[7];
-
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[0], S0);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[1], S1);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[2], S2);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[3], S3);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[4], S4);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[5], S5);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[6], S6);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[7], S7);
-        SHA256_ROUND_KW(a,b,c,d,e,f,g,h, K2_8);
-        SHA256_ROUND_KW(a,b,c,d,e,f,g,h, K2_9);
-        SHA256_ROUND_KW(a,b,c,d,e,f,g,h, K2_10);
-        SHA256_ROUND_KW(a,b,c,d,e,f,g,h, K2_11);
-        SHA256_ROUND_KW(a,b,c,d,e,f,g,h, K2_12);
-        SHA256_ROUND_KW(a,b,c,d,e,f,g,h, K2_13);
-        SHA256_ROUND_KW(a,b,c,d,e,f,g,h, K2_14);
-        SHA256_ROUND_KW(a,b,c,d,e,f,g,h, K2_15);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[16], W2_16);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[17], W2_17);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[18], W2_18);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[19], W2_19);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[20], W2_20);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[21], W2_21);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[22], W2_22);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[23], W2_23);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[24], W2_24);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[25], W2_25);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[26], W2_26);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[27], W2_27);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[28], W2_28);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[29], W2_29);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[30], W2_30);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[31], W2_31);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[32], W2_32);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[33], W2_33);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[34], W2_34);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[35], W2_35);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[36], W2_36);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[37], W2_37);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[38], W2_38);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[39], W2_39);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[40], W2_40);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[41], W2_41);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[42], W2_42);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[43], W2_43);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[44], W2_44);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[45], W2_45);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[46], W2_46);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[47], W2_47);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[48], W2_48);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[49], W2_49);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[50], W2_50);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[51], W2_51);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[52], W2_52);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[53], W2_53);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[54], W2_54);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[55], W2_55);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[56], W2_56);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[57], W2_57);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[58], W2_58);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[59], W2_59);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[60], W2_60);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[61], W2_61);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[62], W2_62);
-        SHA256_ROUND(a,b,c,d,e,f,g,h, K[63], W2_63);
-
-        uint32_t FinalState0 = H_INIT[0] + a;
-
-        if (FinalState0 <= TargetHigh) {
-            uint32_t FinalState[8];
-            FinalState[0] = FinalState0;
-            FinalState[1] = H_INIT[1] + b;
-            FinalState[2] = H_INIT[2] + c;
-            FinalState[3] = H_INIT[3] + d;
-            FinalState[4] = H_INIT[4] + e;
-            FinalState[5] = H_INIT[5] + f;
-            FinalState[6] = H_INIT[6] + g;
-            FinalState[7] = H_INIT[7] + h;
-            if (CheckTarget(FinalState, p_Job->Target)) {
-                *p_Nonce = Nonce;
-                *p_Found = true;
-                return PdqOk;
+        /* Run double SHA256 with baked pre-computation */
+        uint32_t FinalState[8];
+        if (PdqSha256dBaked(MidState, BlockTail, Bake, FinalState)) {
+            /* Passed early termination - do full target check */
+            if (FinalState[0] <= TargetHigh) {
+                if (CheckTarget(FinalState, p_Job->Target)) {
+                    *p_Nonce = Nonce;
+                    *p_Found = true;
+                    return PdqOk;
+                }
             }
         }
+
+        if (Nonce == p_Job->NonceEnd) break;
+        Nonce++;
     }
 
     return PdqOk;
 }
+
+/* ============================================================================
+ * Hardware SHA256 mining for ESP32-D0 (Xtensa LX6)
+ *
+ * Uses the SHA256 hardware peripheral at 0x3FF03000 for massive speedup.
+ * The HW engine processes a 64-byte block in ~62 APB clock cycles vs
+ * ~7000+ CPU cycles in software. On ESP32-D0:
+ *   - Data is written to SHA_TEXT_BASE (0x3FF03000)
+ *   - Digest is read from SHA_TEXT_BASE (not SHA_H_BASE like on S2/S3)
+ *   - DPORT_SEQUENCE_REG_READ is required for safe register reads
+ *   - All words must be byte-swapped (__builtin_bswap32)
+ *
+ * Based on NerdMiner's minerWorkerHw for ESP32-D0.
+ * ============================================================================ */
+
+#if defined(ESP_PLATFORM) && defined(CONFIG_IDF_TARGET_ESP32)
+
+#include "soc/dport_reg.h"
+#include "soc/hwcrypto_reg.h"
+#include "sha/sha_parallel_engine.h"
+#include "hal/sha_ll.h"
+
+/* Write 16 big-endian words to SHA_TEXT_BASE registers.
+ * Non-volatile pointer matches NerdMiner; all writes are ordered by dependency.
+ * always_inline ensures this stays in IRAM with the caller. */
+static inline __attribute__((always_inline)) void HwShaFillBlock(const uint32_t* p_Data) {
+    uint32_t* Reg = (uint32_t*)SHA_TEXT_BASE;
+    Reg[0]  = p_Data[0];  Reg[1]  = p_Data[1];
+    Reg[2]  = p_Data[2];  Reg[3]  = p_Data[3];
+    Reg[4]  = p_Data[4];  Reg[5]  = p_Data[5];
+    Reg[6]  = p_Data[6];  Reg[7]  = p_Data[7];
+    Reg[8]  = p_Data[8];  Reg[9]  = p_Data[9];
+    Reg[10] = p_Data[10]; Reg[11] = p_Data[11];
+    Reg[12] = p_Data[12]; Reg[13] = p_Data[13];
+    Reg[14] = p_Data[14]; Reg[15] = p_Data[15];
+}
+
+/* Write the second block (bytes 64-127) with a specific nonce at word 3 */
+static inline __attribute__((always_inline)) void HwShaFillUpperBlock(const uint32_t* p_Data, uint32_t NonceSwapped) {
+    uint32_t* Reg = (uint32_t*)SHA_TEXT_BASE;
+    Reg[0]  = p_Data[0];
+    Reg[1]  = p_Data[1];
+    Reg[2]  = p_Data[2];
+    Reg[3]  = NonceSwapped;        /* nonce goes at byte offset 76 = word 19 of header = word 3 of block 2 */
+    Reg[4]  = 0x80000000;          /* SHA padding: 0x80 byte */
+    Reg[5]  = 0x00000000;
+    Reg[6]  = 0x00000000;
+    Reg[7]  = 0x00000000;
+    Reg[8]  = 0x00000000;
+    Reg[9]  = 0x00000000;
+    Reg[10] = 0x00000000;
+    Reg[11] = 0x00000000;
+    Reg[12] = 0x00000000;
+    Reg[13] = 0x00000000;
+    Reg[14] = 0x00000000;
+    Reg[15] = 0x00000280;          /* length = 640 bits */
+}
+
+/* Write padding for the second SHA256 pass (hash of 32-byte intermediate) */
+static inline __attribute__((always_inline)) void HwShaFillDoubleBlock(void) {
+    uint32_t* Reg = (uint32_t*)SHA_TEXT_BASE;
+    /* Words 0-7 already contain the intermediate hash (from sha_ll_load) */
+    Reg[8]  = 0x80000000;          /* SHA padding: 0x80 byte */
+    Reg[9]  = 0x00000000;
+    Reg[10] = 0x00000000;
+    Reg[11] = 0x00000000;
+    Reg[12] = 0x00000000;
+    Reg[13] = 0x00000000;
+    Reg[14] = 0x00000000;
+    Reg[15] = 0x00000100;          /* length = 256 bits */
+}
+
+/* Wait for HW SHA engine to finish.
+ * Direct volatile read bypasses the expensive DPORT_REG_READ workaround
+ * (which does interrupt disable + APB pre-read per call).
+ * Safe because we hold the SHA engine lock and only poll from one core. */
+static inline __attribute__((always_inline)) void HwShaWaitIdle(void) {
+    while (*(volatile uint32_t*)SHA_256_BUSY_REG) {}
+}
+
+/* Read digest from SHA_TEXT_BASE with early exit check on word[7].
+ * On ESP32-D0, digest is at SHA_TEXT_BASE (not SHA_H_BASE).
+ * Returns false if lower 16 bits of last hash word are non-zero.
+ * Uses direct volatile reads - safe with SHA engine lock held. */
+static inline __attribute__((always_inline)) bool HwShaReadDigestSwapIf(uint32_t* p_Hash) {
+    volatile uint32_t* Reg = (volatile uint32_t*)SHA_TEXT_BASE;
+    uint32_t Last = Reg[7];
+    if ((Last & 0xFFFF) != 0) {
+        return false;
+    }
+    p_Hash[7] = __builtin_bswap32(Last);
+    p_Hash[0] = __builtin_bswap32(Reg[0]);
+    p_Hash[1] = __builtin_bswap32(Reg[1]);
+    p_Hash[2] = __builtin_bswap32(Reg[2]);
+    p_Hash[3] = __builtin_bswap32(Reg[3]);
+    p_Hash[4] = __builtin_bswap32(Reg[4]);
+    p_Hash[5] = __builtin_bswap32(Reg[5]);
+    p_Hash[6] = __builtin_bswap32(Reg[6]);
+    return true;
+}
+
+PdqError_t PdqSha256MineBlockHw(const PdqMiningJob_t* p_Job, uint32_t* p_Nonce, bool* p_Found) {
+    if (p_Job == NULL || p_Nonce == NULL || p_Found == NULL) return PdqErrorInvalidParam;
+    *p_Found = false;
+
+    /* HeaderSwapped contains the 80-byte header as 20 big-endian words + padding to 32 words.
+     * Words 0-15 = first SHA block, words 16-31 = second SHA block. */
+    const uint32_t* Block0 = p_Job->HeaderSwapped;      /* first 64 bytes (words 0-15) */
+    const uint32_t* Block1 = p_Job->HeaderSwapped + 16;  /* bytes 64-127 (words 16-19 + padding) */
+
+    uint32_t TargetHigh = p_Job->Target[0];
+
+    /* Direct register pointers - avoid sha_ll_* computed addresses in hot loop.
+     * SHA_256 = SHA_1 + 0x20 offset. */
+    volatile uint32_t* const StartReg    = (volatile uint32_t*)SHA_256_START_REG;
+    volatile uint32_t* const ContinueReg = (volatile uint32_t*)SHA_256_CONTINUE_REG;
+    volatile uint32_t* const LoadReg     = (volatile uint32_t*)SHA_256_LOAD_REG;
+
+    esp_sha_lock_engine(SHA2_256);
+
+    uint32_t Nonce = p_Job->NonceStart;
+    uint32_t NonceEnd = p_Job->NonceEnd;
+
+    for (;;) {
+        /* First SHA256: hash the 80-byte block header */
+        /* Block 1: bytes 0-63 (midstate computation) */
+        HwShaFillBlock(Block0);
+        *StartReg = 1;
+
+        /* Block 2: bytes 64-79 + padding, with nonce */
+        HwShaWaitIdle();
+        HwShaFillUpperBlock(Block1, __builtin_bswap32(Nonce));
+        *ContinueReg = 1;
+
+        /* Pre-fill double-hash padding in [8:15] BEFORE load.
+         * Load only writes [0:7], so [8:15] padding stays intact.
+         * This eliminates one wait_idle between load and fill. */
+        HwShaWaitIdle();
+        HwShaFillDoubleBlock();
+        *LoadReg = 1;
+
+        /* Second SHA256: hash the 32-byte intermediate.
+         * After load, SHA_TEXT_BASE = [1st_hash[0:7], padding[8:15]]. */
+        HwShaWaitIdle();
+        *StartReg = 1;
+
+        /* Load and read final digest with early-exit check */
+        HwShaWaitIdle();
+        *LoadReg = 1;
+
+        uint32_t FinalHash[8];
+        if (HwShaReadDigestSwapIf(FinalHash)) {
+            /* Passed early termination - full target check */
+            if (FinalHash[0] <= TargetHigh) {
+                if (CheckTarget(FinalHash, p_Job->Target)) {
+                    *p_Nonce = Nonce;
+                    *p_Found = true;
+                    esp_sha_unlock_engine(SHA2_256);
+                    return PdqOk;
+                }
+            }
+        }
+
+        if (Nonce == NonceEnd) break;
+        Nonce++;
+    }
+
+    esp_sha_unlock_engine(SHA2_256);
+    return PdqOk;
+}
+
+#else
+/* Non-ESP32 stub: fall back to software mining */
+PdqError_t PdqSha256MineBlockHw(const PdqMiningJob_t* p_Job, uint32_t* p_Nonce, bool* p_Found) {
+    return PdqSha256MineBlock(p_Job, p_Nonce, p_Found);
+}
+#endif

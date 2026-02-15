@@ -59,6 +59,8 @@ void setup() {
 
     PdqWifiInit();
     Serial.println("[DBG] WiFi init done"); Serial.flush();
+    Serial.printf("[DBG] SSID='%s' len=%d\n", s_Config.Wifi.Ssid, strlen(s_Config.Wifi.Ssid));
+    Serial.flush();
     if (PdqWifiConnect(s_Config.Wifi.Ssid, s_Config.Wifi.Password) != PdqOk) {
         Serial.println("[PDQminer] WiFi failed, starting portal...");
         PdqWifiStartPortal();
@@ -144,8 +146,8 @@ void loop() {
 
     static uint32_t s_LastJobCheck = 0;
     if (millis() - s_LastJobCheck > 5000) {
-        Serial.printf("[DBG] HasNewJob=%d, StratumReady=%d\n",
-                      PdqStratumHasNewJob(), PdqStratumIsReady());
+        Serial.printf("[DBG] StratumState=%d, StratumReady=%d\n",
+                      PdqStratumGetState(), PdqStratumIsReady());
         s_LastJobCheck = millis();
     }
 

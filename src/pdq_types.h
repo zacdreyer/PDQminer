@@ -44,6 +44,7 @@ typedef struct __attribute__((aligned(4))) {
     char     JobId[65];
     uint32_t Extranonce2;
     uint32_t NTime;
+    uint32_t HeaderSwapped[32];  /* 128 bytes: 80-byte header word-swapped + SHA padding for HW SHA */
 } PdqMiningJob_t;
 
 typedef struct {

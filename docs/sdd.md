@@ -436,14 +436,15 @@ PDQ_IRAM_ATTR static void MiningTaskCore0(void* p_Param)
         Job.NonceEnd = 0x7FFFFFFF;
         xSemaphoreGive(s_State.JobMutex);
 
-        for (uint32_t Base = Job.NonceStart;
-             Base <= Job.NonceEnd && s_State.Running &&
-             s_State.JobVersion == MyJobVersion;
-             Base += PDQ_NONCE_BATCH_SIZE) {
-
+        uint32_t Base = Job.NonceStart;
+        while (s_State.Running && s_State.JobVersion == MyJobVersion) {
             PdqMiningJob_t BatchJob = Job;
             BatchJob.NonceStart = Base;
-            BatchJob.NonceEnd = Base + PDQ_NONCE_BATCH_SIZE - 1;
+            uint32_t BatchEnd = Base + PDQ_NONCE_BATCH_SIZE - 1;
+            if (BatchEnd > Job.NonceEnd || BatchEnd < Base) {
+                BatchEnd = Job.NonceEnd;    /* Clamp or overflow-safe */
+            }
+            BatchJob.NonceEnd = BatchEnd;
 
             uint32_t Nonce;
             bool Found;
@@ -463,6 +464,10 @@ PDQ_IRAM_ATTR static void MiningTaskCore0(void* p_Param)
                 vTaskDelay(1);
                 LastWdtFeed = Now;
             }
+
+            /* Overflow-safe loop termination */
+            if (BatchEnd >= Job.NonceEnd) break;
+            Base = BatchEnd + 1;
         }
     }
 
@@ -626,30 +631,35 @@ static inline int32_t PdqSafeStrCopy(char *p_Dest, const char *p_Src, size_t Des
 
 ### 4.4 Display Driver
 
-**Purpose**: Abstract display hardware for multiple TFT controllers.
+**Purpose**: Abstract display hardware for ILI9341/ST7789 TFT controllers with TFT_eSPI integration.
 
-**Interface**:
+**Interface** (from `display_driver.h`):
 
 ```c
+/**
+ * @brief Display mode selection
+ * @note  Build-time selection via -DPDQ_HEADLESS or runtime via PdqDisplayInit()
+ */
 typedef enum {
-    DisplayDriverIli9341,
-    DisplayDriverSt7789,
-} DisplayDriverType_t;
+    PdqDisplayModeHeadless = 0,  /**< No display output */
+    PdqDisplayModeMinimal,       /**< Text-only mining stats, 1 FPS */
+    PdqDisplayModeStandard       /**< Basic graphics, 2 FPS */
+} PdqDisplayMode_t;
 
-typedef struct {
-    DisplayDriverType_t Type;
-    uint16_t Width;
-    uint16_t Height;
-    uint8_t  Rotation;
-    uint8_t  Brightness;
-} DisplayConfig_t;
+PdqError_t PdqDisplayInit(PdqDisplayMode_t Mode);
+PdqError_t PdqDisplayUpdate(const PdqMinerStats_t* p_Stats);
+PdqError_t PdqDisplayShowMessage(const char* p_Line1, const char* p_Line2);
+PdqError_t PdqDisplaySetBrightness(uint8_t Percent);
+PdqError_t PdqDisplayOff(void);
+```
 
-int32_t PdqDisplayInit(const DisplayConfig_t *p_Config);
-int32_t PdqDisplayClear(uint16_t Color);
-int32_t PdqDisplayDrawText(uint16_t X, uint16_t Y, const char *p_Text, uint16_t Color);
-int32_t PdqDisplayDrawRect(uint16_t X, uint16_t Y, uint16_t W, uint16_t H, uint16_t Color);
-int32_t PdqDisplayUpdate(void);  /* Flush to screen */
-int32_t PdqDisplaySetBrightness(uint8_t Level);
+**Implementation Notes**:
+- Uses Bodmer's TFT_eSPI library for hardware abstraction
+- Display type (ILI9341/ST7789) selected via build flags, not runtime
+- All functions return `PdqOk` immediately when `PDQ_HEADLESS` is defined
+- Mining stats auto-format hashrate as H/s, KH/s, or MH/s
+- Color-coded temperature: white (<55°C), orange (55-70°C), red (>70°C)
+- Rate-limited to 500ms minimum between updates
 
 ### 4.5 WiFi Manager & Configuration Portal
 
@@ -714,46 +724,44 @@ int32_t PdqDisplaySetBrightness(uint8_t Level);
 
 #### 4.5.3 Configuration Parameters
 
-**Data Structures**:
+**Data Structures** (from `pdq_types.h`):
 
 ```c
+/**
+ * @brief WiFi credentials
+ */
+typedef struct {
+    char     Ssid[PDQ_MAX_SSID_LEN + 1];         /**< WiFi network name (max 32 chars) */
+    char     Password[PDQ_MAX_PASSWORD_LEN + 1];  /**< WiFi password */
+} PdqWifiConfig_t;
+
 /**
  * @brief Mining pool configuration
  */
 typedef struct {
-    char     Host[PDQ_CONFIG_MAX_HOST_LEN];      /**< Pool hostname (max 63 chars) */
+    char     Host[PDQ_MAX_HOST_LEN + 1];          /**< Pool hostname (max 64 chars) */
     uint16_t Port;                                /**< Pool port (1-65535) */
-    char     Password[PDQ_CONFIG_MAX_PASS_LEN];   /**< Pool password (optional, encrypted) */
-} PoolConfig_t;
+    char     Password[PDQ_MAX_PASSWORD_LEN + 1];  /**< Pool password (optional) */
+} PdqPoolConfig_t;
 
 /**
  * @brief Complete device configuration (stored in NVS)
  */
 typedef struct {
-    /* WiFi Settings */
-    char         WifiSsid[PDQ_CONFIG_MAX_SSID_LEN];     /**< WiFi network name */
-    char         WifiPassword[PDQ_CONFIG_MAX_PASS_LEN]; /**< WiFi password (encrypted) */
+    PdqWifiConfig_t Wifi;                          /**< WiFi credentials */
+    PdqPoolConfig_t PrimaryPool;                   /**< Primary mining pool */
+    PdqPoolConfig_t BackupPool;                    /**< Backup pool (failover) */
+    char            WalletAddress[PDQ_MAX_WALLET_LEN + 1]; /**< BTC address */
+    char            WorkerName[PDQ_MAX_WORKER_LEN + 1];    /**< Worker identifier */
+    uint8_t         DisplayMode;                   /**< 0=Headless, 1=Minimal, 2=Standard */
+} PdqDeviceConfig_t;
 
-    /* Mining Pools */
-    PoolConfig_t PrimaryPool;                /**< Primary mining pool */
-    PoolConfig_t BackupPool;                 /**< Backup pool (failover) */
-
-    /* Wallet */
-    char         WalletAddress[PDQ_CONFIG_MAX_WALLET_LEN]; /**< BTC address */
-    char         WorkerName[PDQ_CONFIG_MAX_WORKER_LEN];    /**< Worker identifier */
-
-    /* Device Settings */
-    uint8_t      DisplayMode;                /**< 0=Headless, 1=Minimal, 2=Standard */
-    uint8_t      DisplayBrightness;          /**< 0-100% */
-    uint32_t     ConfigVersion;              /**< Schema version for migrations */
-} DeviceConfig_t;
-
-/* Size constraints */
-#define PDQ_CONFIG_MAX_SSID_LEN     33  /* 32 chars + null */
-#define PDQ_CONFIG_MAX_PASS_LEN     65  /* 64 chars + null */
-#define PDQ_CONFIG_MAX_HOST_LEN     64
-#define PDQ_CONFIG_MAX_WALLET_LEN   64
-#define PDQ_CONFIG_MAX_WORKER_LEN   32
+/* Size constraints (from pdq_types.h) */
+#define PDQ_MAX_SSID_LEN       32
+#define PDQ_MAX_PASSWORD_LEN   64
+#define PDQ_MAX_HOST_LEN       64
+#define PDQ_MAX_WALLET_LEN     64
+#define PDQ_MAX_WORKER_LEN     128
 ```
 
 #### 4.5.4 Web Interface
@@ -843,50 +851,36 @@ The configuration portal serves a lightweight HTML page with the following featu
 
 ```c
 /**
- * @brief Initialize WiFi manager and configuration portal
- * @return 0 on success, negative errno on failure
+ * @brief WiFi Manager API (from wifi_manager.h)
  */
-int32_t PdqWifiManagerInit(void);
+PdqError_t PdqWifiInit(void);
+PdqError_t PdqWifiConnect(const char* p_Ssid, const char* p_Password);
+PdqError_t PdqWifiDisconnect(void);
+PdqError_t PdqWifiStartAp(const char* p_Ssid, const char* p_Password);
+PdqError_t PdqWifiStopAp(void);
+PdqError_t PdqWifiStartPortal(void);
+PdqError_t PdqWifiStopPortal(void);
+PdqError_t PdqWifiProcess(void);
+PdqError_t PdqWifiScan(PdqWifiScanResult_t* p_Results, uint8_t* p_Count);
+
+bool            PdqWifiIsConnected(void);
+bool            PdqWifiIsPortalActive(void);
+PdqWifiState_t  PdqWifiGetState(void);
+PdqError_t      PdqWifiGetIp(char* p_Buffer, size_t BufferLen);
+int8_t          PdqWifiGetRssi(void);
 
 /**
- * @brief Start configuration portal (AP mode)
- * @param[in] TimeoutSec  Timeout before returning to station mode (0 = infinite)
- * @return 0 on success, negative errno on failure
+ * @brief Config Manager API (from config_manager.h)
  */
-int32_t PdqWifiStartPortal(uint32_t TimeoutSec);
-
-/**
- * @brief Connect to configured WiFi network
- * @param[in] TimeoutMs  Connection timeout in milliseconds
- * @return 0 on success, -ETIMEDOUT on timeout, negative errno otherwise
- */
-int32_t PdqWifiConnect(uint32_t TimeoutMs);
-
-/**
- * @brief Load configuration from NVS
- * @param[out] p_Config  Configuration structure to populate
- * @return 0 on success, -ENOENT if not configured, negative errno otherwise
- */
-int32_t PdqConfigLoad(DeviceConfig_t *p_Config);
-
-/**
- * @brief Save configuration to NVS (encrypted)
- * @param[in] p_Config  Configuration to save
- * @return 0 on success, negative errno on failure
- */
-int32_t PdqConfigSave(const DeviceConfig_t *p_Config);
-
-/**
- * @brief Factory reset - clear all configuration
- * @return 0 on success, negative errno on failure
- */
-int32_t PdqConfigReset(void);
-
-/**
- * @brief Check if device is configured
- * @return true if valid configuration exists, false otherwise
- */
-bool PdqConfigIsValid(void);
+PdqError_t PdqConfigInit(void);
+PdqError_t PdqConfigLoad(PdqDeviceConfig_t* p_Config);
+PdqError_t PdqConfigSave(const PdqDeviceConfig_t* p_Config);
+PdqError_t PdqConfigReset(void);
+bool       PdqConfigIsValid(void);
+PdqError_t PdqConfigGetString(const char* p_Key, char* p_Value, size_t MaxLen);
+PdqError_t PdqConfigSetString(const char* p_Key, const char* p_Value);
+PdqError_t PdqConfigGetU16(const char* p_Key, uint16_t* p_Value);
+PdqError_t PdqConfigSetU16(const char* p_Key, uint16_t Value);
 ```
 
 #### 4.5.6 Pool Failover Logic
@@ -2222,22 +2216,22 @@ int32_t PdqMdnsInit(void)
 
 | Environment | RAM | Flash | Status |
 |-------------|-----|-------|--------|
-| cyd_ili9341 | 16.0% | 61.3% | SUCCESS |
-| cyd_st7789 | 16.0% | 61.2% | SUCCESS |
-| esp32_headless | 15.9% | 59.9% | SUCCESS |
+| cyd_ili9341 | 16.4% | 62.8% | SUCCESS |
+| cyd_st7789 | 16.4% | 62.8% | SUCCESS |
+| esp32_headless | 16.3% | 61.3% | SUCCESS |
 | benchmark | 6.5% | 22.0% | SUCCESS |
 | esp8266_headless | TBD | TBD | Added (Session 26) |
 
-### 12.4 Code Review Status (Round 8 - 100% Confidence)
+### 12.4 Code Review Status (Round 9 - Post-Session 27)
 
 | Component      | Accuracy   | Security | Optimization  | Notes                                                |
 | ----------------| -----------| ----------| --------------| ------------------------------------------------------|
-| SHA256 Engine  | **100%**   | N/A      | **Optimized** | W pre-computation, early rejection, no byte conversion |
-| Mining Task    | **100%**   | **100%** | Good          | Atomic counters, share queue, job versioning         |
+| SHA256 Engine  | **100%**   | N/A      | **Optimized** | 3 optimization passes, KW1 constants, zero-term elimination |
+| Mining Task    | **100%**   | **100%** | Good          | Nonce overflow fixed, atomic counters, job versioning |
 | Stratum Client | **100%**   | **100%** | Good          | Protocol compliance verified, extranonce handling    |
 | WiFi Manager   | **100%**   | Secure   | Good          | Form parsing, NVS save, strncpy null-term            |
 | Config Manager | **100%**   | Good     | Good          | Magic validation                                     |
-| Main           | **100%**   | Good     | Good          | Timeout handling, share submission, dynamic en2 size |
+| Main           | **100%**   | Good     | Good          | Non-destructive debug print, share submission        |
 | Display Driver | **100%**   | N/A      | Good          | TFT_eSPI, null checks, rate limiting, headless stubs |
 
 ### 12.5 API Changes Log
@@ -2338,6 +2332,42 @@ Result: 0x01000000 ^ 0x00002000 ^ 0x10000000 = 0x11002000
 | Input validation | PASS - NULL checks on all public APIs |
 | Password handling | PASS - proper bounds checking |
 | Integer overflow | PASS - no unsafe arithmetic |
+
+### 12.12 Critical Bug Fixes (Session 27)
+
+User reported 54 H/s on ESP32-2432S028R ST7789 device. Root cause analysis identified three critical bugs.
+
+| Bug | Location | Impact | Fix |
+|-----|----------|--------|-----|
+| Debug print consuming job notifications | `main.cpp:147-148` | Jobs rarely processed (root cause of 54 H/s) | Changed destructive `PdqStratumHasNewJob()` to non-destructive `PdqStratumGetState()` |
+| Nonce overflow in mining loop | `sha256_engine.c:443-444` | Infinite loop when NonceEnd=0xFFFFFFFF | Changed to `for(;;)` with explicit `if (Nonce == NonceEnd) break` |
+| Nonce overflow in mining task | `mining_task.c:91-125, 151-185` | Infinite loop in batch outer loop | Changed to `while` loop with overflow-safe boundary check |
+
+### 12.13 SHA256 Optimization Pass 3 (Session 27)
+
+| Optimization | Description | Savings |
+|--------------|-------------|---------|
+| W1 constant elimination | W1_4-W1_15 replaced with compile-time constants (padding) | 12 ReadBe32 per nonce |
+| SIG0/SIG1 pre-computation | SIG0(0x80000000), SIG0(0x280), SIG1(0x280) | 3 SIG operations per nonce |
+| Zero-term elimination | Removed additions of zero-valued W1_5-W1_14, SIG0(0), SIG1(0) | ~12 additions per nonce |
+| KW1 pre-computed constants | K[i]+W[i] pre-computed for rounds 4-15 | 12 additions per nonce |
+| SHA256_ROUND_KW macro | Combined K+W variant for constant rounds | Cleaner hot path |
+
+**Pre-computed KW1 Constants:**
+```c
+static const uint32_t KW1_4  = 0x3956c25b + 0x80000000;  /* K[4] + W1_4 */
+static const uint32_t KW1_5  = 0x59f111f1;               /* K[5] + 0 */
+/* ... KW1_6 through KW1_14 = K[i] + 0 ... */
+static const uint32_t KW1_15 = 0xc19bf174 + 0x280;       /* K[15] + W1_15 */
+```
+
+**Simplified W1 Pre-computation (zero terms eliminated):**
+```c
+uint32_t W1_20 = SIG1(W1_18) + W1_4;       /* W1_13=0, SIG0(W1_5)=0 */
+uint32_t W1_21 = SIG1(W1_19);              /* all zero terms */
+uint32_t W1_22 = SIG1(W1_20) + W1_15;      /* SIG0(W1_7)=0, W1_6=0 */
+uint32_t W1_30 = SIG1(W1_28) + W1_23 + SIG0_W1_15;  /* first non-zero SIG0 */
+```
 
 ---
 

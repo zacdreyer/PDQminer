@@ -652,6 +652,18 @@ PdqError_t PdqStratumBuildMiningJob(const PdqStratumJob_t* p_StratumJob,
     p_MiningJob->BlockTail[62] = 0x02;
     p_MiningJob->BlockTail[63] = 0x80;
 
+    /* Prepare byte-swapped header + padding for HW SHA engine (ESP32-D0).
+     * The HW SHA peripheral expects big-endian words written to registers. */
+    for (int i = 0; i < 20; i++) {
+        p_MiningJob->HeaderSwapped[i] = __builtin_bswap32(((const uint32_t*)Header)[i]);
+    }
+    /* SHA padding for 80 bytes: 0x80 byte, zeros, then length = 640 bits = 0x280 */
+    p_MiningJob->HeaderSwapped[20] = 0x80000000;
+    for (int i = 21; i < 31; i++) {
+        p_MiningJob->HeaderSwapped[i] = 0;
+    }
+    p_MiningJob->HeaderSwapped[31] = 0x00000280;
+
     DifficultyToTarget(Difficulty, p_MiningJob->Target);
 
     strncpy(p_MiningJob->JobId, p_StratumJob->JobId, 64);

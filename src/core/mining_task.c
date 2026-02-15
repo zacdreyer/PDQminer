@@ -19,7 +19,8 @@
 #define PDQ_USE_RTOS 1
 #define PDQ_MINING_STACK_SIZE   8192
 #define PDQ_MINING_PRIORITY     5
-#define PDQ_NONCE_BATCH_SIZE    8192
+#define PDQ_NONCE_BATCH_SIZE_SW 4096
+#define PDQ_NONCE_BATCH_SIZE_HW (128*1024)
 #define PDQ_WDT_FEED_INTERVAL   1000
 #else
 #define PDQ_IRAM_ATTR
@@ -29,6 +30,13 @@
 #endif
 
 #define PDQ_SHARE_QUEUE_SIZE    8
+
+/* Nonce space split: SW1 on core 1 gets 1/8, HW on core 0 gets 7/8.
+ * Core 0 runs only HW task so WiFi/system/IDLE are not starved. */
+#define PDQ_SW1_NONCE_START     0x00000000
+#define PDQ_SW1_NONCE_END       0x1FFFFFFF
+#define PDQ_HW_NONCE_START      0x20000000
+#define PDQ_HW_NONCE_END        0xFFFFFFFF
 
 typedef struct {
     volatile bool           Running;
@@ -46,7 +54,7 @@ typedef struct {
     uint32_t                LastHashReport;
     uint64_t                LocalHashes;
 #if PDQ_USE_RTOS
-    TaskHandle_t            TaskHandle[2];
+    TaskHandle_t            TaskHandle[2];  /* Core1 SW, Core0 HW */
     SemaphoreHandle_t       JobMutex;
     QueueHandle_t           ShareQueue;
 #else
@@ -69,61 +77,6 @@ static void QueueShare(const PdqMiningJob_t* p_Job, uint32_t Nonce) {
     xQueueSend(s_State.ShareQueue, &Share, 0);
 }
 
-PDQ_IRAM_ATTR static void MiningTaskCore0(void* p_Param) {
-    esp_task_wdt_add(NULL);
-    uint32_t LastWdtFeed = 0;
-    uint32_t LocalHashes = 0;
-    uint32_t LastHashReport = 0;
-
-    while (s_State.Running) {
-        if (!s_State.HasJob) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-            continue;
-        }
-
-        xSemaphoreTake(s_State.JobMutex, portMAX_DELAY);
-        PdqMiningJob_t Job = s_State.CurrentJob;
-        uint32_t MyJobVersion = s_State.JobVersion;
-        Job.NonceStart = 0x00000000;
-        Job.NonceEnd = 0x7FFFFFFF;
-        xSemaphoreGive(s_State.JobMutex);
-
-        for (uint32_t Base = Job.NonceStart; Base <= Job.NonceEnd && s_State.Running && s_State.JobVersion == MyJobVersion; Base += PDQ_NONCE_BATCH_SIZE) {
-            PdqMiningJob_t BatchJob = Job;
-            BatchJob.NonceStart = Base;
-            BatchJob.NonceEnd = Base + PDQ_NONCE_BATCH_SIZE - 1;
-            if (BatchJob.NonceEnd > Job.NonceEnd) BatchJob.NonceEnd = Job.NonceEnd;
-
-            uint32_t Nonce;
-            bool Found;
-            PdqSha256MineBlock(&BatchJob, &Nonce, &Found);
-
-            LocalHashes += (BatchJob.NonceEnd - BatchJob.NonceStart + 1);
-
-            if (Found) {
-                QueueShare(&Job, Nonce);
-                __atomic_fetch_add(&s_State.BlocksFound, 1, __ATOMIC_RELAXED);
-            }
-
-            uint32_t Now = xTaskGetTickCount() * portTICK_PERIOD_MS;
-            if (Now - LastWdtFeed > PDQ_WDT_FEED_INTERVAL) {
-                esp_task_wdt_reset();
-                vTaskDelay(1);
-                LastWdtFeed = Now;
-            }
-
-            if (Now - LastHashReport > 1000) {
-                __atomic_fetch_add(&s_State.TotalHashes, LocalHashes, __ATOMIC_RELAXED);
-                LocalHashes = 0;
-                LastHashReport = Now;
-            }
-        }
-    }
-
-    esp_task_wdt_delete(NULL);
-    vTaskDelete(NULL);
-}
-
 PDQ_IRAM_ATTR static void MiningTaskCore1(void* p_Param) {
     esp_task_wdt_add(NULL);
     uint32_t LastWdtFeed = 0;
@@ -139,21 +92,23 @@ PDQ_IRAM_ATTR static void MiningTaskCore1(void* p_Param) {
         xSemaphoreTake(s_State.JobMutex, portMAX_DELAY);
         PdqMiningJob_t Job = s_State.CurrentJob;
         uint32_t MyJobVersion = s_State.JobVersion;
-        Job.NonceStart = 0x80000000;
-        Job.NonceEnd = 0xFFFFFFFF;
+        Job.NonceStart = PDQ_SW1_NONCE_START;
+        Job.NonceEnd = PDQ_SW1_NONCE_END;
         xSemaphoreGive(s_State.JobMutex);
 
-        for (uint32_t Base = Job.NonceStart; Base <= Job.NonceEnd && s_State.Running && s_State.JobVersion == MyJobVersion; Base += PDQ_NONCE_BATCH_SIZE) {
-            PdqMiningJob_t BatchJob = Job;
-            BatchJob.NonceStart = Base;
-            BatchJob.NonceEnd = Base + PDQ_NONCE_BATCH_SIZE - 1;
-            if (BatchJob.NonceEnd > Job.NonceEnd || BatchJob.NonceEnd < Base) BatchJob.NonceEnd = Job.NonceEnd;
+        uint32_t Base = Job.NonceStart;
+        uint32_t JobEnd = Job.NonceEnd;
+        while (s_State.Running && s_State.JobVersion == MyJobVersion) {
+            Job.NonceStart = Base;
+            uint32_t BatchEnd = Base + PDQ_NONCE_BATCH_SIZE_SW - 1;
+            if (BatchEnd > JobEnd || BatchEnd < Base) BatchEnd = JobEnd;
+            Job.NonceEnd = BatchEnd;
 
             uint32_t Nonce;
             bool Found;
-            PdqSha256MineBlock(&BatchJob, &Nonce, &Found);
+            PdqSha256MineBlock(&Job, &Nonce, &Found);
 
-            LocalHashes += (BatchJob.NonceEnd - BatchJob.NonceStart + 1);
+            LocalHashes += (Job.NonceEnd - Job.NonceStart + 1);
 
             if (Found) {
                 QueueShare(&Job, Nonce);
@@ -172,6 +127,68 @@ PDQ_IRAM_ATTR static void MiningTaskCore1(void* p_Param) {
                 LocalHashes = 0;
                 LastHashReport = Now;
             }
+
+            if (BatchEnd >= JobEnd) break;
+            Base = BatchEnd + 1;
+        }
+    }
+
+    esp_task_wdt_delete(NULL);
+    vTaskDelete(NULL);
+}
+
+PDQ_IRAM_ATTR static void MiningTaskHw(void* p_Param) {
+    esp_task_wdt_add(NULL);
+    uint32_t LastWdtFeed = 0;
+    uint32_t LocalHashes = 0;
+    uint32_t LastHashReport = 0;
+
+    while (s_State.Running) {
+        if (!s_State.HasJob) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+
+        xSemaphoreTake(s_State.JobMutex, portMAX_DELAY);
+        PdqMiningJob_t Job = s_State.CurrentJob;
+        uint32_t MyJobVersion = s_State.JobVersion;
+        Job.NonceStart = PDQ_HW_NONCE_START;
+        Job.NonceEnd = PDQ_HW_NONCE_END;
+        xSemaphoreGive(s_State.JobMutex);
+
+        uint32_t Base = Job.NonceStart;
+        uint32_t JobEnd = Job.NonceEnd;
+        while (s_State.Running && s_State.JobVersion == MyJobVersion) {
+            Job.NonceStart = Base;
+            uint32_t BatchEnd = Base + PDQ_NONCE_BATCH_SIZE_HW - 1;
+            if (BatchEnd > JobEnd || BatchEnd < Base) BatchEnd = JobEnd;
+            Job.NonceEnd = BatchEnd;
+
+            uint32_t Nonce;
+            bool Found;
+            PdqSha256MineBlockHw(&Job, &Nonce, &Found);
+
+            LocalHashes += (Job.NonceEnd - Job.NonceStart + 1);
+
+            if (Found) {
+                QueueShare(&Job, Nonce);
+                __atomic_fetch_add(&s_State.BlocksFound, 1, __ATOMIC_RELAXED);
+            }
+
+            /* HW task must yield after every batch to prevent IDLE task WDT.
+             * Each 16K batch takes ~80ms at 200 KH/s. */
+            esp_task_wdt_reset();
+            vTaskDelay(1);
+
+            uint32_t Now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+            if (Now - LastHashReport > 1000) {
+                __atomic_fetch_add(&s_State.TotalHashes, LocalHashes, __ATOMIC_RELAXED);
+                LocalHashes = 0;
+                LastHashReport = Now;
+            }
+
+            if (BatchEnd >= JobEnd) break;
+            Base = BatchEnd + 1;
         }
     }
 
@@ -214,23 +231,23 @@ PdqError_t PdqMiningStart(void) {
     s_State.StartTime = xTaskGetTickCount() * portTICK_PERIOD_MS;
 
     xTaskCreatePinnedToCore(
-        MiningTaskCore0,
-        "MineCore0",
-        PDQ_MINING_STACK_SIZE,
-        NULL,
-        PDQ_MINING_PRIORITY,
-        &s_State.TaskHandle[0],
-        0
-    );
-
-    xTaskCreatePinnedToCore(
         MiningTaskCore1,
         "MineCore1",
         PDQ_MINING_STACK_SIZE,
         NULL,
         PDQ_MINING_PRIORITY,
-        &s_State.TaskHandle[1],
+        &s_State.TaskHandle[0],
         1
+    );
+
+    xTaskCreatePinnedToCore(
+        MiningTaskHw,
+        "MineHW",
+        PDQ_MINING_STACK_SIZE,
+        NULL,
+        PDQ_MINING_PRIORITY,
+        &s_State.TaskHandle[1],
+        0   /* HW task is sole mining task on core 0 */
     );
 #endif
 
