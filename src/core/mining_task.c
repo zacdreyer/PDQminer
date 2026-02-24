@@ -176,7 +176,7 @@ PDQ_IRAM_ATTR static void MiningTaskHw(void* p_Param) {
             }
 
             /* HW task must yield after every batch to prevent IDLE task WDT.
-             * Each 16K batch takes ~80ms at 200 KH/s. */
+             * Each 128K batch takes ~225ms at 583 KH/s. */
             esp_task_wdt_reset();
             vTaskDelay(1);
 

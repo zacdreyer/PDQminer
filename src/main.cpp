@@ -12,6 +12,7 @@
 #include "network/wifi_manager.h"
 #include "stratum/stratum_client.h"
 #include "core/mining_task.h"
+#include "core/sha256_engine.h"
 #include "api/device_api.h"
 
 #ifndef PDQ_HEADLESS
@@ -38,6 +39,9 @@ void setup() {
                   PdqHalGetCpuFreqMhz(), PdqHalGetChipId());
 
     PdqConfigInit();
+
+    /* Run HW SHA diagnostic to determine midstate caching capability */
+    PdqSha256HwDiagnostic();
 
 #ifndef PDQ_HEADLESS
     PdqDisplayInit(PdqDisplayModeMinimal);

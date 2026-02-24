@@ -8,9 +8,11 @@
 #include "sha256_engine.h"
 #include <string.h>
 
-/* Use -Os for the SHA256 engine: on Xtensa LX6 (16 registers with windows),
+/* Use -Os for the SW SHA256 engine: on Xtensa LX6 (16 registers with windows),
  * -O3 causes massive register spilling in the unrolled SHA256 rounds.
- * Also disable -funroll-loops which survives the pragma from the command line. */
+ * Also disable -funroll-loops which survives the pragma from the command line.
+ * We use push/pop to restore -O2 for the HW mining code later in this file. */
+#pragma GCC push_options
 #pragma GCC optimize("Os,no-unroll-loops")
 
 #if defined(ESP_PLATFORM)
@@ -628,15 +630,26 @@ PDQ_IRAM_ATTR PdqError_t PdqSha256MineBlock(const PdqMiningJob_t* p_Job, uint32_
  * Hardware SHA256 mining for ESP32-D0 (Xtensa LX6)
  *
  * Uses the SHA256 hardware peripheral at 0x3FF03000 for massive speedup.
- * The HW engine processes a 64-byte block in ~62 APB clock cycles vs
- * ~7000+ CPU cycles in software. On ESP32-D0:
- *   - Data is written to SHA_TEXT_BASE (0x3FF03000)
- *   - Digest is read from SHA_TEXT_BASE (not SHA_H_BASE like on S2/S3)
- *   - DPORT_SEQUENCE_REG_READ is required for safe register reads
- *   - All words must be byte-swapped (__builtin_bswap32)
+ * The HW engine processes a 64-byte block in ~83 CPU cycles at 240MHz.
  *
- * Based on NerdMiner's minerWorkerHw for ESP32-D0.
+ * Architecture notes (ESP32-D0):
+ *   - Data is written to SHA_TEXT_BASE (0x3FF03000), 16 x 32-bit words
+ *   - Digest is read from SHA_TEXT_BASE after LOAD (not SHA_H_BASE like S2/S3)
+ *   - LOAD copies internal state → SHA_TEXT[0:7] (read-only, no state restore)
+ *   - Midstate caching is NOT possible (ESP32-D0 lacks SOC_SHA_SUPPORT_RESUME)
+ *   - Writes to SHA_TEXT during START are SAFE (engine latches data at trigger)
+ *   - Writes to SHA_TEXT during CONTINUE are UNSAFE (engine reads progressively)
+ *
+ * Optimizations applied:
+ *   1. Overlap block1 fill with block0 START (hide 16 APB writes behind SHA)
+ *   2. Overlap block0 fill with 2nd hash START (hide 16 APB writes behind SHA)
+ *   3. Reduced block0 refill: only 8 words ([8:15] preserved from overlap fill)
+ *   4. Reduced double-hash padding: only 2 words differ from block1[8:15]
+ *   5. Compiled at -O2 (restored from -Os used for SW SHA code)
  * ============================================================================ */
+
+/* Restore -O2 for HW mining code (SW SHA used -Os to avoid register spilling) */
+#pragma GCC pop_options
 
 #if defined(ESP_PLATFORM) && defined(CONFIG_IDF_TARGET_ESP32)
 
@@ -724,6 +737,17 @@ static inline __attribute__((always_inline)) bool HwShaReadDigestSwapIf(uint32_t
     return true;
 }
 
+/* Write first 8 words of block0 to SHA_TEXT[0:7].
+ * Used in the hot loop where SHA_TEXT[8:15] already has block0[8:15]
+ * from the previous iteration's overlapped fill. */
+PDQ_IRAM_ATTR static inline __attribute__((always_inline)) void HwShaFillBlock0Half(const uint32_t* p_Data) {
+    uint32_t* Reg = (uint32_t*)SHA_TEXT_BASE;
+    Reg[0]  = p_Data[0];  Reg[1]  = p_Data[1];
+    Reg[2]  = p_Data[2];  Reg[3]  = p_Data[3];
+    Reg[4]  = p_Data[4];  Reg[5]  = p_Data[5];
+    Reg[6]  = p_Data[6];  Reg[7]  = p_Data[7];
+}
+
 PdqError_t PdqSha256MineBlockHw(const PdqMiningJob_t* p_Job, uint32_t* p_Nonce, bool* p_Found) {
     if (p_Job == NULL || p_Nonce == NULL || p_Found == NULL) return PdqErrorInvalidParam;
     *p_Found = false;
@@ -740,42 +764,86 @@ PdqError_t PdqSha256MineBlockHw(const PdqMiningJob_t* p_Job, uint32_t* p_Nonce, 
     volatile uint32_t* const StartReg    = (volatile uint32_t*)SHA_256_START_REG;
     volatile uint32_t* const ContinueReg = (volatile uint32_t*)SHA_256_CONTINUE_REG;
     volatile uint32_t* const LoadReg     = (volatile uint32_t*)SHA_256_LOAD_REG;
+    uint32_t* const TextNV = (uint32_t*)SHA_TEXT_BASE;
 
     esp_sha_lock_engine(SHA2_256);
 
     uint32_t Nonce = p_Job->NonceStart;
     uint32_t NonceEnd = p_Job->NonceEnd;
+    uint32_t FinalHash[8];
 
+    /* === First iteration: full block0 fill (16 words) since SHA_TEXT is cold === */
+    HwShaFillBlock(Block0);
+    *StartReg = 1;
+    /* OVERLAP: fill block1 while block0 START runs (safe: START latches data at trigger) */
+    HwShaFillUpperBlock(Block1, __builtin_bswap32(Nonce));
+    HwShaWaitIdle();
+
+    *ContinueReg = 1;
+    HwShaWaitIdle();
+
+    /* Double-hash padding: after CONTINUE, SHA_TEXT still has block1 data.
+     * block1[8:15] = {0, 0, 0, 0, 0, 0, 0, 0x280}
+     * We need:       {0x80000000, 0, 0, 0, 0, 0, 0, 0x100}
+     * Only words [8] and [15] differ. */
+    TextNV[8]  = 0x80000000;
+    TextNV[15] = 0x00000100;
+
+    /* LOAD intermediate hash to SHA_TEXT[0:7] */
+    *LoadReg = 1;
+    HwShaWaitIdle();
+
+    /* Second SHA256: SHA_TEXT = [intermediate_hash, double_padding] */
+    *StartReg = 1;
+    /* OVERLAP: fill block0 for next iteration while 2nd hash runs.
+     * After this, SHA_TEXT[0:15] = block0. Then LOAD overwrites only [0:7]
+     * with the final hash, leaving SHA_TEXT[8:15] = block0[8:15] intact. */
+    HwShaFillBlock(Block0);
+    HwShaWaitIdle();
+
+    *LoadReg = 1;
+    /* Read final hash (APB stalls until LOAD completes) */
+    if (HwShaReadDigestSwapIf(FinalHash)) {
+        if (FinalHash[0] <= TargetHigh) {
+            if (CheckTarget(FinalHash, p_Job->Target)) {
+                *p_Nonce = Nonce;
+                *p_Found = true;
+                esp_sha_unlock_engine(SHA2_256);
+                return PdqOk;
+            }
+        }
+    }
+
+    if (Nonce == NonceEnd) { esp_sha_unlock_engine(SHA2_256); return PdqOk; }
+    Nonce++;
+
+    /* === Hot loop: SHA_TEXT[8:15] already has block0[8:15] from overlap === */
     for (;;) {
-        /* First SHA256: hash the 80-byte block header */
-        /* Block 1: bytes 0-63 (midstate computation) */
-        HwShaFillBlock(Block0);
+        /* Block0: only fill [0:7] since [8:15] is preserved from overlap fill */
+        HwShaFillBlock0Half(Block0);
         *StartReg = 1;
-
-        /* Block 2: bytes 64-79 + padding, with nonce */
-        HwShaWaitIdle();
+        /* OVERLAP: fill block1 during block0 START */
         HwShaFillUpperBlock(Block1, __builtin_bswap32(Nonce));
+        HwShaWaitIdle();
+
         *ContinueReg = 1;
-
-        /* Pre-fill double-hash padding in [8:15] BEFORE load.
-         * Load only writes [0:7], so [8:15] padding stays intact.
-         * This eliminates one wait_idle between load and fill. */
         HwShaWaitIdle();
-        HwShaFillDoubleBlock();
+
+        /* Minimal double-hash padding: only 2 words differ from block1 residual */
+        TextNV[8]  = 0x80000000;
+        TextNV[15] = 0x00000100;
+
         *LoadReg = 1;
-
-        /* Second SHA256: hash the 32-byte intermediate.
-         * After load, SHA_TEXT_BASE = [1st_hash[0:7], padding[8:15]]. */
         HwShaWaitIdle();
+
         *StartReg = 1;
-
-        /* Load and read final digest with early-exit check */
+        /* OVERLAP: fill block0 for next iteration during 2nd hash */
+        HwShaFillBlock(Block0);
         HwShaWaitIdle();
+
         *LoadReg = 1;
 
-        uint32_t FinalHash[8];
         if (HwShaReadDigestSwapIf(FinalHash)) {
-            /* Passed early termination - full target check */
             if (FinalHash[0] <= TargetHigh) {
                 if (CheckTarget(FinalHash, p_Job->Target)) {
                     *p_Nonce = Nonce;
@@ -794,9 +862,198 @@ PdqError_t PdqSha256MineBlockHw(const PdqMiningJob_t* p_Job, uint32_t* p_Nonce, 
     return PdqOk;
 }
 
+/* ============================================================================
+ * HW SHA benchmark: measures actual per-nonce cycle counts and validates
+ * the overlap/preservation assumptions used in the optimized mining loop.
+ * ============================================================================ */
+void PdqSha256HwDiagnostic(void) {
+    extern int printf(const char*, ...);
+
+    esp_sha_lock_engine(SHA2_256);
+
+    volatile uint32_t* const StartReg    = (volatile uint32_t*)SHA_256_START_REG;
+    volatile uint32_t* const ContinueReg = (volatile uint32_t*)SHA_256_CONTINUE_REG;
+    volatile uint32_t* const LoadReg     = (volatile uint32_t*)SHA_256_LOAD_REG;
+    volatile uint32_t* const BusyReg     = (volatile uint32_t*)SHA_256_BUSY_REG;
+    uint32_t* TextNV = (uint32_t*)SHA_TEXT_BASE;
+    volatile uint32_t* TextV  = (volatile uint32_t*)SHA_TEXT_BASE;
+
+    /* Test data (deterministic) */
+    uint32_t block0[16], block1[16];
+    for (int i = 0; i < 16; i++) {
+        block0[i]  = 0x01020304 + i * 0x11111111;
+        block1[i]  = 0xA0B0C0D0 + i * 0x01010101;
+    }
+
+    /* === Test 1: SHA_TEXT preserved after START? === */
+    for (int i = 0; i < 16; i++) TextNV[i] = block0[i];
+    *StartReg = 1;
+    while (*BusyReg) {}
+    bool preservedAfterStart = true;
+    for (int i = 0; i < 16; i++) {
+        if (TextV[i] != block0[i]) { preservedAfterStart = false; break; }
+    }
+    printf("[DIAG] SHA_TEXT preserved after START: %s\n",
+           preservedAfterStart ? "YES" : "NO");
+
+    /* === Test 2: SHA_TEXT preserved after CONTINUE? === */
+    /* Re-fill block0 and restart, then fill block1 and continue */
+    for (int i = 0; i < 16; i++) TextNV[i] = block0[i];
+    *StartReg = 1;
+    while (*BusyReg) {}
+    for (int i = 0; i < 16; i++) TextNV[i] = block1[i];
+    *ContinueReg = 1;
+    while (*BusyReg) {}
+    bool preservedAfterCont = true;
+    for (int i = 0; i < 16; i++) {
+        if (TextV[i] != block1[i]) { preservedAfterCont = false; break; }
+    }
+    printf("[DIAG] SHA_TEXT preserved after CONTINUE: %s\n",
+           preservedAfterCont ? "YES" : "NO");
+
+    /* === Test 3: LOAD only writes [0:7], preserves [8:15]? === */
+    for (int i = 0; i < 16; i++) TextNV[i] = block0[i];
+    *StartReg = 1;
+    while (*BusyReg) {}
+    *LoadReg = 1;
+    while (*BusyReg) {}
+    bool loadPreserves815 = true;
+    for (int i = 8; i < 16; i++) {
+        if (TextV[i] != block0[i]) { loadPreserves815 = false; break; }
+    }
+    printf("[DIAG] LOAD preserves SHA_TEXT[8:15]: %s\n",
+           loadPreserves815 ? "YES" : "NO");
+
+    /* === Test 4: Overlap validation — full mining cycle === */
+    /* Normal approach (reference) */
+    for (int i = 0; i < 16; i++) TextNV[i] = block0[i];
+    *StartReg = 1;
+    while (*BusyReg) {}
+    for (int i = 0; i < 16; i++) TextNV[i] = block1[i];
+    *ContinueReg = 1;
+    while (*BusyReg) {}
+    TextNV[8]  = 0x80000000;
+    TextNV[15] = 0x00000100;
+    *LoadReg = 1;
+    while (*BusyReg) {}
+    *StartReg = 1;
+    while (*BusyReg) {}
+    *LoadReg = 1;
+    while (*BusyReg) {}
+    uint32_t refHash[8];
+    for (int i = 0; i < 8; i++) refHash[i] = TextV[i];
+
+    /* Optimized approach (overlapped fills, reduced block0) */
+    for (int i = 0; i < 16; i++) TextNV[i] = block0[i];
+    *StartReg = 1;
+    for (int i = 0; i < 16; i++) TextNV[i] = block1[i]; /* overlap block1 */
+    while (*BusyReg) {}
+    *ContinueReg = 1;
+    while (*BusyReg) {}
+    TextNV[8]  = 0x80000000;
+    TextNV[15] = 0x00000100;
+    *LoadReg = 1;
+    while (*BusyReg) {}
+    *StartReg = 1;
+    for (int i = 0; i < 16; i++) TextNV[i] = block0[i]; /* overlap block0 */
+    while (*BusyReg) {}
+    *LoadReg = 1;
+    while (*BusyReg) {}
+    uint32_t optHash[8];
+    for (int i = 0; i < 8; i++) optHash[i] = TextV[i];
+
+    bool overlapMatch = true;
+    for (int i = 0; i < 8; i++) {
+        if (refHash[i] != optHash[i]) { overlapMatch = false; break; }
+    }
+    printf("[DIAG] Overlap optimization correctness: %s\n",
+           overlapMatch ? "PASS" : "FAIL");
+
+    /* Second iteration using half-fill for block0 (relies on [8:15] preservation) */
+    /* SHA_TEXT[8:15] should still have block0[8:15] from overlap fill above */
+    for (int i = 0; i < 8; i++) TextNV[i] = block0[i]; /* only [0:7] */
+    *StartReg = 1;
+    for (int i = 0; i < 16; i++) TextNV[i] = block1[i]; /* overlap block1 */
+    while (*BusyReg) {}
+    *ContinueReg = 1;
+    while (*BusyReg) {}
+    TextNV[8]  = 0x80000000;
+    TextNV[15] = 0x00000100;
+    *LoadReg = 1;
+    while (*BusyReg) {}
+    *StartReg = 1;
+    for (int i = 0; i < 16; i++) TextNV[i] = block0[i]; /* overlap block0 */
+    while (*BusyReg) {}
+    *LoadReg = 1;
+    while (*BusyReg) {}
+    uint32_t halfHash[8];
+    for (int i = 0; i < 8; i++) halfHash[i] = TextV[i];
+
+    bool halfMatch = true;
+    for (int i = 0; i < 8; i++) {
+        if (refHash[i] != halfHash[i]) { halfMatch = false; break; }
+    }
+    printf("[DIAG] Half-fill block0 correctness: %s\n",
+           halfMatch ? "PASS" : "FAIL");
+
+    /* === Test 5: Reduced padding (2 writes) correctness === */
+    /* Reference: full 8-word padding after CONTINUE */
+    for (int i = 0; i < 16; i++) TextNV[i] = block0[i];
+    *StartReg = 1;
+    while (*BusyReg) {}
+    for (int i = 0; i < 16; i++) TextNV[i] = block1[i];
+    *ContinueReg = 1;
+    while (*BusyReg) {}
+    /* Full padding fill */
+    TextNV[8]  = 0x80000000;
+    TextNV[9]  = 0; TextNV[10] = 0; TextNV[11] = 0;
+    TextNV[12] = 0; TextNV[13] = 0; TextNV[14] = 0;
+    TextNV[15] = 0x00000100;
+    *LoadReg = 1;
+    while (*BusyReg) {}
+    *StartReg = 1;
+    while (*BusyReg) {}
+    *LoadReg = 1;
+    while (*BusyReg) {}
+    uint32_t fullPadHash[8];
+    for (int i = 0; i < 8; i++) fullPadHash[i] = TextV[i];
+
+    bool padMatch = true;
+    for (int i = 0; i < 8; i++) {
+        if (refHash[i] != fullPadHash[i]) { padMatch = false; break; }
+    }
+    printf("[DIAG] Reduced padding (2 writes) correctness: %s\n",
+           padMatch ? "PASS" : "FAIL");
+
+    /* === Timing: individual operations === */
+    uint32_t t0, t1;
+    for (int i = 0; i < 16; i++) TextNV[i] = block0[i];
+    __asm__ volatile("rsr %0, ccount" : "=a"(t0));
+    *StartReg = 1;
+    while (*BusyReg) {}
+    __asm__ volatile("rsr %0, ccount" : "=a"(t1));
+    printf("[DIAG] START: %lu cyc  CONTINUE: ", (unsigned long)(t1 - t0));
+
+    for (int i = 0; i < 16; i++) TextNV[i] = block1[i];
+    __asm__ volatile("rsr %0, ccount" : "=a"(t0));
+    *ContinueReg = 1;
+    while (*BusyReg) {}
+    __asm__ volatile("rsr %0, ccount" : "=a"(t1));
+    printf("%lu cyc  LOAD: ", (unsigned long)(t1 - t0));
+
+    __asm__ volatile("rsr %0, ccount" : "=a"(t0));
+    *LoadReg = 1;
+    while (*BusyReg) {}
+    __asm__ volatile("rsr %0, ccount" : "=a"(t1));
+    printf("%lu cyc\n", (unsigned long)(t1 - t0));
+
+    esp_sha_unlock_engine(SHA2_256);
+}
+
 #else
 /* Non-ESP32 stub: fall back to software mining */
 PdqError_t PdqSha256MineBlockHw(const PdqMiningJob_t* p_Job, uint32_t* p_Nonce, bool* p_Found) {
     return PdqSha256MineBlock(p_Job, p_Nonce, p_Found);
 }
+void PdqSha256HwDiagnostic(void) {}
 #endif
