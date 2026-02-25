@@ -43,7 +43,7 @@ PDQminer is a **fully open-source** Bitcoin mining ecosystem for ESP32 microcont
 | Aspect | NerdMiner | NMMiner | PDQminer |
 |--------|-----------|---------|----------|
 | **Open Source** | ✅ Yes | ❌ Closed | ✅ 100% Open |
-| **Hashrate (ESP32-D0)** | ~55 KH/s | ~1000 KH/s | **~700 KH/s** |
+| **Hashrate (ESP32-D0)** | ~350 KH/s | ~1000 KH/s | **~700 KH/s** |
 | **Configuration** | Captive Portal | Captive Portal | Captive Portal |
 | **Fleet Management** | ❌ No | ❌ No | ✅ **PDQManager** |
 | **Auto-Flash Tool** | ❌ No | ✅ Yes | ✅ **PDQFlasher** |

@@ -443,7 +443,7 @@ Comprehensive review ensuring all documentation is 100% accurate, bug-free, and 
 **NerdMiner & NMMiner Analysis**:
 - Fetched and analyzed NerdMiner v2 source code (`mining.cpp`)
 - Identified key optimizations: midstate caching, hardware SHA256, job queues
-- Confirmed NMMiner claims ~1000 KH/s vs NerdMiner's ~55 KH/s
+- Confirmed NMMiner claims ~1000 KH/s vs NerdMiner's ~350 KH/s
 - Documented optimization gap: full SHA256 unrolling + nonce-only recomputation
 
 **coding-standards.md Enhancements (Sections 9-13 Added)**:

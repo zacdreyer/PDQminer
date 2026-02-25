@@ -52,7 +52,7 @@ ESP32-S2/S3/C3:
 ```
 
 ### Why NMMiner Achieves ~1035 KH/s (hypothesis)
-The gap from NerdMiner's ~200 KH/s to NMMiner's ~1035 KH/s likely comes from:
+The gap from NerdMiner's ~350 KH/s to NMMiner's ~1035 KH/s likely comes from:
 1. **Dual-core parallel HW SHA**: Two cores each doing ~500 KH/s with HW SHA
 2. **Per-core SHA engine locking**: Minimizing lock contention
 3. **Aggressive assembly optimization**: Hand-tuned register access patterns
