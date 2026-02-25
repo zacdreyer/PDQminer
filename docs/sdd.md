@@ -1,7 +1,7 @@
 # PDQminer Software Design Document (SDD)
 
-> **Version**: 1.1.0
-> **Last Updated**: 2025-02-13
+> **Version**: 1.2.0
+> **Last Updated**: 2025-02-14
 > **Status**: Active
 > **Owner**: PDQminer Team
 
@@ -242,26 +242,34 @@ PDQminer/
    - Use local copies to avoid volatile reads in inner loop
 
 6. **Compiler Optimization Settings**
-   - `-O3` optimization level for release builds
-   - `-funroll-loops` combined with manual unrolling
-   - `-fomit-frame-pointer` to free a register
-   - `-finline-functions` with `-finline-limit=10000` for aggressive inlining
-   - `-fno-strict-aliasing` for safe type punning
-   - `-ftree-vectorize` for auto-vectorization where possible
-   - `-ffunction-sections` / `-fdata-sections` for dead code elimination
-   - `-mtext-section-literals` for Xtensa literal pool optimization
+   - `-O2` optimization level for release builds (not -O3, to avoid code bloat)
    - `-ffast-math` enabled (integer-only hot path unaffected)
-   - `-flto` NOT currently used (planned for future)
 
 7. **Branch Elimination**
    - No conditional branches in SHA256 rounds (constant-time)
    - Early-exit only on target check (after double hash)
    - Use bitwise operations instead of conditionals where possible
 
-8. **ESP32 Hardware Considerations**
-   - ESP32 has hardware SHA, but software is faster for single-block mining
-   - Hardware SHA has DMA overhead unsuitable for rapid nonce iteration
-   - Dual-core utilization: each core processes independent nonce ranges
+8. **ESP32 Hardware SHA256 Acceleration**
+   - ESP32-D0 has a dedicated SHA256 hardware peripheral at `SHA_TEXT_BASE` (0x3FF03000)
+   - HW SHA processes one 64-byte block via START (first block) or CONTINUE (subsequent blocks)
+   - Timing: START=627 CPU cycles, CONTINUE=627 CPU cycles, LOAD=562 CPU cycles
+   - HW mining achieves **581 KH/s** (413 CPU cycles/nonce) vs ~46 KH/s for SW per core
+   - **Midstate caching is NOT possible on ESP32-D0**: No `SHA_H_BASE` register exists (only on ESP32-S2/S3/C3). LOAD copies digest from internal state to SHA_TEXT (read-only direction). Espressif docs: "not possible to restore a SHA digest state into the engine."
+   - Each double-SHA256 requires: START (block0) + CONTINUE (block1) + START (double-hash) + LOAD (read result)
+
+9. **Overlapped Register Writes**
+   - Writes to SHA_TEXT during START are **safe** (engine latches data at trigger)
+   - Writes to SHA_TEXT during CONTINUE are **unsafe** (engine reads progressively)
+   - Optimization: Fill next block's SHA_TEXT registers while current block is being hashed
+   - Block1 fill (16 APB writes) overlapped with Block0 START
+   - Block0 half-fill (8 APB writes) overlapped with double-hash START
+   - 2-write reduced padding (only TextNV[8] and TextNV[15] differ between iterations)
+
+10. **GCC Optimization Split**
+    - SW mining code compiled with `-Os` (size-optimized, frees IRAM/cache for HW path)
+    - HW mining code compiled with `-O2` via GCC `push_options`/`pop_options` pragmas
+    - IRAM tested for HW path but regressed (538 vs 413 cyc/nonce) - flash cache already efficient
 
 9. **Cache Optimization**
    - K constants in contiguous DRAM array (cache-friendly)
@@ -308,52 +316,41 @@ static PDQ_DRAM_ATTR const uint32_t K[64] = {
 };
 ```
 
-**Interface (Hot Path - IRAM Placement)**:
+**Interface (Hot Path)**:
 
 ```c
 /**
- * @brief Initialize SHA256 context
- * @param[out] p_Ctx  Pointer to context (must not be NULL)
- * @return PdqOk on success, PdqErrorInvalidParam on NULL
- */
-PdqError_t PdqSha256Init(PdqSha256Context_t *p_Ctx);
-
-/**
- * @brief Process data into SHA256 context
- * @param[in,out] p_Ctx   Context pointer (must not be NULL)
- * @param[in]     p_Data  Input data (must not be NULL if Length > 0)
- * @param[in]     Length  Data length in bytes
- * @return PdqOk on success, PdqErrorInvalidParam on invalid args
- */
-PdqError_t PdqSha256Update(PdqSha256Context_t *p_Ctx, const uint8_t *p_Data, size_t Length);
-
-/**
- * @brief Finalize SHA256 and output hash
- * @param[in,out] p_Ctx  Context pointer (must not be NULL)
- * @param[out]    p_Hash Output buffer (must be at least 32 bytes)
- * @return PdqOk on success, PdqErrorInvalidParam on invalid args
- */
-PdqError_t PdqSha256Final(PdqSha256Context_t *p_Ctx, uint8_t *p_Hash);
-
-/**
- * @brief Compute midstate from first 64 bytes of block header
- * @param[in]  p_BlockHeader 80-byte block header (must not be NULL)
- * @param[out] p_Midstate    32-byte output buffer (must not be NULL)
- * @return PdqOk on success, PdqErrorInvalidParam on invalid args
- */
-PdqError_t PdqSha256Midstate(const uint8_t *p_BlockHeader, uint8_t *p_Midstate);
-
-/**
- * @brief Mine a range of nonces (HOT PATH - IRAM)
+ * @brief Mine a range of nonces using SOFTWARE SHA256 (HOT PATH)
  * @param[in]     p_Job      Mining job with midstate, tail, target, nonce range
  * @param[out]    p_Nonce    Pointer to store found nonce
  * @param[out]    p_Found    Set to true if valid nonce found
  * @return PdqOk on success (check p_Found for result)
- * @warning MUST be called from pinned task; not interrupt-safe
+ * @note Compiled with -Os (GCC push_options)
  */
-PDQ_IRAM_ATTR PdqError_t PdqSha256MineBlock(const PdqMiningJob_t *p_Job,
-                                              uint32_t *p_Nonce,
-                                              bool *p_Found);
+PdqError_t PdqSha256MineBlock(const PdqMiningJob_t *p_Job,
+                               uint32_t *p_Nonce,
+                               bool *p_Found);
+
+/**
+ * @brief Mine a range of nonces using HARDWARE SHA256 peripheral (HOT PATH)
+ * @param[in]     p_Job      Mining job with midstate, tail, target, nonce range
+ * @param[out]    p_Nonce    Pointer to store found nonce
+ * @param[out]    p_Found    Set to true if valid nonce found
+ * @return PdqOk on success (check p_Found for result)
+ * @note Uses ESP32 SHA peripheral at SHA_TEXT_BASE (0x3FF03000)
+ * @note Compiled with -O2 (GCC push_options)
+ * @note Achieves ~581 KH/s (413 cycles/nonce) with overlap optimization
+ */
+PdqError_t PdqSha256MineBlockHw(const PdqMiningJob_t *p_Job,
+                                 uint32_t *p_Nonce,
+                                 bool *p_Found);
+
+/**
+ * @brief Run boot-time hardware SHA diagnostic
+ * @note Tests LOAD direction, overlap safety, auto-store, timing
+ * @note Called once during setup() to validate HW SHA behavior
+ */
+void PdqSha256HwDiagnostic(void);
 ```
 
 **Security Considerations for SHA256 Engine**:
@@ -373,18 +370,22 @@ PDQ_IRAM_ATTR PdqError_t PdqSha256MineBlock(const PdqMiningJob_t *p_Job,
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Mining Task Design                        │
+│                   Dual-Task Mining Architecture                  │
 │                                                                  │
 │  Core 0 (PRO_CPU)                    Core 1 (APP_CPU)           │
 │  ┌──────────────────────┐           ┌──────────────────────┐   │
-│  │ MiningTask0          │           │ MiningTask1          │   │
-│  │ Priority: MAX-1      │           │ Priority: MAX-1      │   │
+│  │ MiningTaskHw         │           │ MiningTaskCore1      │   │
+│  │ Priority: 5          │           │ Priority: 5          │   │
 │  │                      │           │                      │   │
-│  │ Nonce: 0x00000000    │           │ Nonce: 0x80000000    │   │
-│  │     to 0x7FFFFFFF    │           │     to 0xFFFFFFFF    │   │
+│  │ Nonce: 0x20000000    │           │ Nonce: 0x00000000    │   │
+│  │     to 0xFFFFFFFF    │           │     to 0x1FFFFFFF    │   │
+│  │ (7/8 nonce space)    │           │ (1/8 nonce space)    │   │
 │  │                      │           │                      │   │
-│  │ [SHA256 Engine]      │           │ [SHA256 Engine]      │   │
-│  │ [Local WDT Handle]   │           │ [Local WDT Handle]   │   │
+│  │ [HW SHA256 Engine]   │           │ [SW SHA256 Engine]   │
+│  │ PdqSha256MineBlockHw │           │ PdqSha256MineBlock   │   │
+│  │ ~581 KH/s            │           │ ~46 KH/s             │   │
+│  │ 413 cyc/nonce        │           │                      │   │
+│  │ Batch: 128K nonces   │           │ Batch: 4096 nonces   │   │
 │  └──────────┬───────────┘           └──────────┬───────────┘   │
 │             │                                   │                │
 │             └───────────────┬───────────────────┘                │
@@ -392,11 +393,15 @@ PDQ_IRAM_ATTR PdqError_t PdqSha256MineBlock(const PdqMiningJob_t *p_Job,
 │                             ▼                                    │
 │                    ┌────────────────┐                           │
 │                    │ Share Queue    │                           │
-│                    │ (Lock-free)    │                           │
+│                    │ (FreeRTOS)     │                           │
 │                    │ (xQueueSend)   │                           │
 │                    └────────────────┘                           │
+│                                                                  │
+│  Combined: 627 KH/s (HW 581 + SW 46)                           │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+> **Note**: Core 0 also runs WiFi/system tasks, but the HW SHA engine yields between 128K-nonce batches (~225ms each at 581 KH/s), preventing IDLE task WDT starvation.
 
 **Task Configuration**:
 
@@ -405,22 +410,25 @@ PDQ_IRAM_ATTR PdqError_t PdqSha256MineBlock(const PdqMiningJob_t *p_Job,
 | Stack Size | 8192 bytes | Sufficient for SHA256 W[64] array on stack |
 | Priority | 5 | High priority for mining, configurable |
 | Core Affinity | Pinned (`xTaskCreatePinnedToCore`) | No migration overhead |
-| WDT Feed | Time-based, every 1000ms | Balance throughput/safety |
-| Nonce Batch | 8192 (ESP32) / 4096 (ESP8266) | Per-core batch size |
+| WDT Feed | Time-based, every 1000ms (SW) / per-batch (HW) | Balance throughput/safety |
+| SW Nonce Batch | 4096 | Per SW-core batch size |
+| HW Nonce Batch | 131072 (128K) | Per HW batch size (~225ms at 581 KH/s) |
+| Nonce Split | SW 1/8 (0x00-0x1F), HW 7/8 (0x20-0xFF) | HW gets majority of nonce space |
 | Stack Placement | DRAM (default) | Not IRAM to preserve IRAM for code |
 
 **Watchdog Timer (WDT) Management**:
 
 ```c
 /**
- * @brief Mining task for Core 0 (handles nonces 0x00000000-0x7FFFFFFF)
- * @note  Core 1 task is identical but with nonce range 0x80000000-0xFFFFFFFF
+ * @brief HW Mining task for Core 0 (nonces 0x20000000-0xFFFFFFFF)
+ * @note  Uses ESP32 SHA256 hardware peripheral for acceleration
+ * @note  Core 1 runs MiningTaskCore1 (SW) with nonces 0x00000000-0x1FFFFFFF
  */
-PDQ_IRAM_ATTR static void MiningTaskCore0(void* p_Param)
+PDQ_IRAM_ATTR static void MiningTaskHw(void* p_Param)
 {
     esp_task_wdt_add(NULL);
-    uint32_t LastWdtFeed = 0;
     uint32_t LocalHashes = 0;
+    uint32_t LastHashReport = 0;
 
     while (s_State.Running) {
         if (!s_State.HasJob) {
@@ -428,45 +436,46 @@ PDQ_IRAM_ATTR static void MiningTaskCore0(void* p_Param)
             continue;
         }
 
-        /* Copy job under mutex and set core-specific nonce range */
         xSemaphoreTake(s_State.JobMutex, portMAX_DELAY);
         PdqMiningJob_t Job = s_State.CurrentJob;
         uint32_t MyJobVersion = s_State.JobVersion;
-        Job.NonceStart = 0x00000000;
-        Job.NonceEnd = 0x7FFFFFFF;
+        Job.NonceStart = PDQ_HW_NONCE_START;  /* 0x20000000 */
+        Job.NonceEnd = PDQ_HW_NONCE_END;      /* 0xFFFFFFFF */
         xSemaphoreGive(s_State.JobMutex);
 
         uint32_t Base = Job.NonceStart;
+        uint32_t JobEnd = Job.NonceEnd;
         while (s_State.Running && s_State.JobVersion == MyJobVersion) {
-            PdqMiningJob_t BatchJob = Job;
-            BatchJob.NonceStart = Base;
-            uint32_t BatchEnd = Base + PDQ_NONCE_BATCH_SIZE - 1;
-            if (BatchEnd > Job.NonceEnd || BatchEnd < Base) {
-                BatchEnd = Job.NonceEnd;    /* Clamp or overflow-safe */
-            }
-            BatchJob.NonceEnd = BatchEnd;
+            Job.NonceStart = Base;
+            uint32_t BatchEnd = Base + PDQ_NONCE_BATCH_SIZE_HW - 1;
+            if (BatchEnd > JobEnd || BatchEnd < Base) BatchEnd = JobEnd;
+            Job.NonceEnd = BatchEnd;
 
             uint32_t Nonce;
             bool Found;
-            PdqSha256MineBlock(&BatchJob, &Nonce, &Found);
+            PdqSha256MineBlockHw(&Job, &Nonce, &Found);
 
-            LocalHashes += (BatchJob.NonceEnd - BatchJob.NonceStart + 1);
+            LocalHashes += (Job.NonceEnd - Job.NonceStart + 1);
 
             if (Found) {
                 QueueShare(&Job, Nonce);
                 __atomic_fetch_add(&s_State.BlocksFound, 1, __ATOMIC_RELAXED);
             }
 
-            /* Time-based WDT feed */
+            /* HW task must yield after every batch to prevent IDLE task WDT.
+             * Each 128K batch takes ~225ms at 581 KH/s. */
+            esp_task_wdt_reset();
+            vTaskDelay(1);
+
             uint32_t Now = xTaskGetTickCount() * portTICK_PERIOD_MS;
-            if (Now - LastWdtFeed > PDQ_WDT_FEED_INTERVAL) {
-                esp_task_wdt_reset();
-                vTaskDelay(1);
-                LastWdtFeed = Now;
+            if (Now - LastHashReport > 1000) {
+                __atomic_fetch_add(&s_State.TotalHashes, LocalHashes, __ATOMIC_RELAXED);
+                LocalHashes = 0;
+                LastHashReport = Now;
             }
 
             /* Overflow-safe loop termination */
-            if (BatchEnd >= Job.NonceEnd) break;
+            if (BatchEnd >= JobEnd) break;
             Base = BatchEnd + 1;
         }
     }
@@ -964,20 +973,22 @@ Users can enter configuration mode via:
 
 ## 6. Performance Considerations
 
-### 6.1 Hashrate Optimization Targets
+### 6.1 Hashrate Optimization Progress
 
-| Optimization | Expected Gain | Complexity |
-|--------------|---------------|------------|
-| CPU @ 240MHz | Baseline | Low |
-| Midstate caching | +50% | Medium |
-| Nonce-only update | +100% | High |
-| Full round unrolling | +30% | Medium |
-| IRAM placement | +10% | Low |
-| Dual-core mining | +95% | Medium |
+| Optimization | Expected Gain | Actual Result | Status |
+|--------------|---------------|---------------|--------|
+| CPU @ 240MHz | Baseline | Baseline | Complete |
+| Midstate caching | +50% | ~58 KH/s SW | Complete |
+| Nonce-only update | +100% | Included in SW | Complete |
+| Full round unrolling | +30% | Included in SW | Complete |
+| Dual-core (SW+SW) | +95% | ~58 KH/s (2 cores) | Complete |
+| **HW SHA256 peripheral** | **+700%** | **472 KH/s** | **Complete** |
+| **Overlap register writes** | **+31%** | **627 KH/s** | **Complete** |
+| Midstate on HW | N/A | **Impossible on ESP32-D0** | Investigated |
+| IRAM for HW path | +5% est | **Regressed (538 vs 413 cyc)** | Rejected |
 
-**Target Hashrate Calculation**:
-- Baseline (NerdMiner-style): ~350 KH/s
-- With all optimizations: ~1050+ KH/s
+**Current Hashrate**: 627 KH/s (HW 581 KH/s + SW 46 KH/s)
+**Target**: ≥1000 KH/s
 
 ### 6.2 Memory Budget
 
@@ -1200,14 +1211,14 @@ build_flags =
 
 ### 7.3 Expected Hashrate by Build
 
-| Build Target | Display Mode | Platform | Expected Hashrate |
+| Build Target | Display Mode | Platform | Measured Hashrate |
 |--------------|--------------|----------|-------------------|
-| `cyd_ili9341` | Minimal | ESP32 | ~1020 KH/s |
-| `cyd_st7789` | Minimal | ESP32 | ~1020 KH/s |
-| `esp32_headless` | Headless | ESP32 | ~1050+ KH/s |
-| `cyd_ili9341_headless` | Headless | ESP32 | ~1050+ KH/s |
+| `cyd_ili9341` | Minimal | ESP32 | **627 KH/s** |
+| `cyd_st7789` | Minimal | ESP32 | **627 KH/s** |
+| `esp32_headless` | Headless | ESP32 | ~630+ KH/s (est.) |
+| `cyd_ili9341_headless` | Headless | ESP32 | ~630+ KH/s (est.) |
 | `benchmark` | Headless | ESP32 | Raw measurement |
-| `esp8266_headless` | Headless | ESP8266 | TBD (single-core) |
+| `esp8266_headless` | Headless | ESP8266 | TBD (single-core, no HW SHA) |
 
 > **Note**: Headless builds are expected to gain 20-50 KH/s over display-enabled builds due to eliminated SPI overhead and freed CPU cycles.
 > **Note**: ESP8266 is single-core at 160MHz. Hashrate will be significantly lower than ESP32.
@@ -1570,11 +1581,12 @@ PdqSecureZero(WifiPassword, sizeof(WifiPassword));
 
 ### 9.1 Potential Enhancements
 
-- Hardware SHA acceleration (ESP32 peripheral)
-- Assembly-optimized SHA256 rounds
+- Further HW SHA optimization (reduce 413 cyc/nonce overhead)
+- Assembly-optimized SHA256 rounds (Xtensa-specific)
 - Multi-algorithm support (Scrypt, etc.)
 - ASIC chip support (BM1397)
 - Daisy-chain multiple devices
+- ESP32-S2/S3/C3 midstate caching (these chips have `SHA_H_BASE` register)
 
 ### 9.2 Scalability
 
@@ -2195,8 +2207,8 @@ int32_t PdqMdnsInit(void)
 
 | Component          | File                           | Status       | Notes                                                             |
 | --------------------| --------------------------------| --------------| -------------------------------------------------------------------|
-| SHA256 Engine      | `src/core/sha256_engine.c`     | **Complete** | 64-round unrolled, midstate optimization, IRAM placement, W pre-computation |
-| Mining Task        | `src/core/mining_task.c`       | **Complete** | Dual-core (ESP32) / single-core (ESP8266), atomic counters, nonce splitting |
+| SHA256 Engine      | `src/core/sha256_engine.c`     | **Complete** | SW: 64-round unrolled, midstate, W pre-computation. HW: ESP32 SHA peripheral with overlap optimization, 413 cyc/nonce, boot-time diagnostic |
+| Mining Task        | `src/core/mining_task.c`       | **Complete** | Dual-task: HW (Core 0, 581 KH/s) + SW (Core 1, 46 KH/s) = 627 KH/s. Nonce split 7/8 HW + 1/8 SW |
 | Board HAL          | `src/hal/board_hal.c`          | **Complete** | WDT, temp, heap, chip ID using ESP-IDF APIs                       |
 | Benchmark Firmware | `src/main_benchmark.cpp`       | **Complete** | Single/dual-core hashrate measurement                             |
 | Stratum Client     | `src/stratum/stratum_client.c` | **Complete** | Full V1 protocol, job building, merkle root computation           |
@@ -2222,17 +2234,17 @@ int32_t PdqMdnsInit(void)
 | benchmark | 6.5% | 22.0% | SUCCESS |
 | esp8266_headless | TBD | TBD | Added (Session 26) |
 
-### 12.4 Code Review Status (Round 9 - Post-Session 27)
+### 12.4 Code Review Status (Round 11 - Post HW SHA Optimization)
 
 | Component      | Accuracy   | Security | Optimization  | Notes                                                |
 | ----------------| -----------| ----------| --------------| ------------------------------------------------------|
-| SHA256 Engine  | **100%**   | N/A      | **Optimized** | 3 optimization passes, KW1 constants, zero-term elimination |
-| Mining Task    | **100%**   | **100%** | Good          | Nonce overflow fixed, atomic counters, job versioning |
+| SHA256 Engine  | **100%**   | N/A      | **HW+SW**     | HW SHA peripheral at 413 cyc/nonce (overlap), SW midstate+unrolled, GCC push/pop_options |
+| Mining Task    | **100%**   | **100%** | **HW+SW**     | Dual-task: MiningTaskHw (Core 0) + MiningTaskCore1 (Core 1), nonce overflow fixed |
 | Stratum Client | **100%**   | **100%** | Good          | Protocol compliance verified, extranonce handling    |
 | WiFi Manager   | **100%**   | Secure   | Good          | Form parsing, NVS save, strncpy null-term            |
 | Config Manager | **100%**   | Good     | Good          | Magic validation                                     |
-| Main           | **100%**   | Good     | Good          | Non-destructive debug print, share submission        |
-| Display Driver | **100%**   | N/A      | Good          | TFT_eSPI, null checks, rate limiting, headless stubs |
+| Main           | **100%**   | Good     | Good          | HW diagnostic on boot, non-destructive debug print, share submission |
+| Display Driver | **100%**   | N/A      | Good          | TFT_eSPI, ILI9341 with LOAD_GLCD/LOAD_FONT2, headless stubs |
 
 ### 12.5 API Changes Log
 
@@ -2368,6 +2380,59 @@ uint32_t W1_21 = SIG1(W1_19);              /* all zero terms */
 uint32_t W1_22 = SIG1(W1_20) + W1_15;      /* SIG0(W1_7)=0, W1_6=0 */
 uint32_t W1_30 = SIG1(W1_28) + W1_23 + SIG0_W1_15;  /* first non-zero SIG0 */
 ```
+
+### 12.14 Hardware SHA256 Engine (Sessions 29-30)
+
+ESP32-D0 hardware SHA256 acceleration via the SHA peripheral at `SHA_TEXT_BASE` (0x3FF03000).
+
+**Hardware Characterization (via `PdqSha256HwDiagnostic()`):**
+
+| Property | Result |
+|----------|--------|
+| LOAD direction | Internal state → SHA_TEXT (read-only, cannot write midstate) |
+| Auto-store after START/CONTINUE | No (explicit LOAD required) |
+| SHA_TEXT preservation after operations | Yes (contents survive START/CONTINUE/LOAD) |
+| LOAD preservation of [8:15] | Yes (LOAD only overwrites [0:7]) |
+| Overlap writes during START | **SAFE** (engine latches at trigger time) |
+| Overlap writes during CONTINUE | **UNSAFE** (engine reads registers progressively) |
+| START timing | 627 CPU cycles |
+| CONTINUE timing | 627 CPU cycles |
+| LOAD timing | 562 CPU cycles |
+
+**Midstate Caching Investigation:**
+- ESP32-D0 has **no `SHA_H_BASE` register** (only exists on ESP32-S2/S3/C3)
+- `SOC_SHA_SUPPORT_RESUME` is NOT defined for ESP32 in ESP-IDF
+- Espressif docs: "not possible to restore a SHA digest state into the engine"
+- Each nonce requires a full 3-block SHA256d sequence (no shortcuts)
+
+**Performance:**
+
+| Metric | Value |
+|--------|-------|
+| HW cycles/nonce | 413 |
+| HW hashrate | 581 KH/s |
+| SW hashrate (Core 1) | ~46 KH/s |
+| Combined | **627 KH/s** |
+
+### 12.15 Overlap Optimization (Session 30)
+
+Overlapping SHA_TEXT register writes with SHA engine computation.
+
+| Optimization | Description | Savings |
+|--------------|-------------|---------|
+| Block1 fill during Block0 START | 16 APB writes hidden during 627-cycle START | 16 register writes |
+| Block0 half-fill during double-hash START | 8 APB writes hidden during 627-cycle START | 8 register writes |
+| 2-write reduced padding | Only TextNV[8] and TextNV[15] need updating between iterations | 14 register writes |
+| SHA_TEXT preservation | Reuse block0 SHA_TEXT[8:15] from previous overlap fill | 8 register writes |
+
+**IRAM Test Result:**
+- Placing `PdqSha256MineBlockHw()` in IRAM **regressed** performance (538 cyc vs 413 cyc)
+- Root cause: Flash cache already efficient for hot loops; IRAM likely caused bus contention
+- Decision: Keep HW mining code in flash, use -O2 only
+
+**Commits:**
+- `23617e0`: HW SHA256 engine implementation (+1190/-566 lines, 11 files)
+- `7286523`: Overlap optimization (+290/-28 lines, 4 files)
 
 ---
 

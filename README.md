@@ -23,7 +23,7 @@
   <img src="https://img.shields.io/badge/status-in%20development-orange" alt="Status"/>
   <img src="https://img.shields.io/badge/platform-ESP32-blue" alt="Platform"/>
   <img src="https://img.shields.io/badge/license-GPL--3.0-green" alt="License"/>
-  <img src="https://img.shields.io/badge/hashrate-277%20MH%2Fs-brightgreen" alt="Hashrate"/>
+  <img src="https://img.shields.io/badge/hashrate-627%20KH%2Fs-brightgreen" alt="Hashrate"/>
 </p>
 
 ---
@@ -32,7 +32,7 @@
 
 PDQminer is a **fully open-source** Bitcoin mining ecosystem for ESP32 microcontrollers, consisting of:
 
-1. **PDQminer Firmware** - Maximum hashrate mining firmware (277 MH/s dual-core)
+1. **PDQminer Firmware** - Maximum hashrate mining firmware (627 KH/s with HW SHA256 acceleration)
 2. **PDQFlasher** - Cross-platform firmware flashing tool with auto-detection
 3. **PDQManager** - Fleet management application for monitoring multiple miners
 
@@ -43,7 +43,7 @@ PDQminer is a **fully open-source** Bitcoin mining ecosystem for ESP32 microcont
 | Aspect | NerdMiner | NMMiner | PDQminer |
 |--------|-----------|---------|----------|
 | **Open Source** | ✅ Yes | ❌ Closed | ✅ 100% Open |
-| **Hashrate (ESP32-D0)** | ~55 KH/s | ~1000 KH/s | **277 MH/s** |
+| **Hashrate (ESP32-D0)** | ~55 KH/s | ~1000 KH/s | **627 KH/s** |
 | **Configuration** | Captive Portal | Captive Portal | Captive Portal |
 | **Fleet Management** | ❌ No | ❌ No | ✅ **PDQManager** |
 | **Auto-Flash Tool** | ❌ No | ✅ Yes | ✅ **PDQFlasher** |
@@ -56,16 +56,18 @@ PDQminer is a **fully open-source** Bitcoin mining ecosystem for ESP32 microcont
 ### PDQminer Firmware
 
 - **Maximum Hashrate SHA256d Engine**
-  - Midstate precomputation (first 64 bytes cached)
+  - ESP32 hardware SHA256 acceleration (581 KH/s on HW peripheral)
+  - Overlapped register writes (fill next block during SHA computation)
+  - Software midstate precomputation (first 64 bytes cached)
   - Nonce-only block updates (16 bytes per hash)
-  - Fully unrolled SHA256 rounds (no loop overhead)
-  - IRAM-optimized hot paths
-  - Hardware SHA256 acceleration (ESP32-S3)
+  - Fully unrolled SHA256 rounds (SW path, no loop overhead)
   - Early hash rejection (check MSB first)
+  - Boot-time hardware diagnostic and validation
 
-- **Dual-Core Architecture**
-  - Core 1: 100% dedicated to mining
-  - Core 0: WiFi, display, stratum communication
+- **Dual-Task Architecture (HW + SW)**
+  - Core 0: Hardware SHA256 engine (~581 KH/s) - 7/8 of nonce space
+  - Core 1: Software SHA256 engine (~46 KH/s) - 1/8 of nonce space
+  - Combined throughput: **627 KH/s**
   - Zero contention design - no mutex in hash loop
 
 - **Stratum V1 Protocol**
@@ -234,23 +236,48 @@ pdqmanager  # Starts web server at http://localhost:5000
 
 ---
 
-## Performance Targets
+## Performance
 
-| Board | Clock | Expected Hashrate | Status |
-|-------|-------|-------------------|--------|
-| ESP32-D0WD-V3 | 240 MHz | **≥1000 KH/s** | In Development |
-| ESP32-S3 | 240 MHz | ~400 KH/s | Planned |
-| ESP32-C3 | 160 MHz | ~200 KH/s | Planned |
+### Current Hashrate
+
+| Component | Core | Hashrate | Cycles/Nonce |
+|-----------|------|----------|-------------|
+| HW SHA256 Engine | Core 0 | 581 KH/s | 413 |
+| SW SHA256 Engine | Core 1 | 46 KH/s | — |
+| **Combined** | **Both** | **627 KH/s** | — |
+
+> **Hardware**: ESP32-D0WD-V3 (rev3.1), Dual-Core Xtensa LX6 @ 240 MHz
+
+### Performance History
+
+| Milestone | Hashrate | Optimization |
+|-----------|----------|-------------|
+| SW-only baseline | 58 KH/s | Dual-core, midstate, unrolled rounds |
+| HW SHA256 engine | 472 KH/s | ESP32 SHA peripheral acceleration |
+| Overlap optimization | **627 KH/s** | Register writes overlapped with SHA computation |
+
+### Hardware SHA256 Findings (ESP32-D0)
+
+| Property | Value |
+|----------|-------|
+| SHA_TEXT_BASE | 0x3FF03000 |
+| START latency | 627 CPU cycles |
+| CONTINUE latency | 627 CPU cycles |
+| LOAD latency | 562 CPU cycles |
+| Midstate restore | **Not possible** (no SHA_H_BASE on ESP32-D0) |
+| Overlap writes during START | Safe (engine latches on trigger) |
+| Overlap writes during CONTINUE | Unsafe (corrupts result) |
 
 ### Optimization Techniques
 
-1. **Midstate Caching**: First SHA256 block computed once per job
-2. **Nonce-Only Updates**: Only 4 bytes change per hash attempt
-3. **Loop Unrolling**: 64 SHA256 rounds fully unrolled
-4. **Early Rejection**: Check hash MSB before full comparison
-5. **IRAM Placement**: Critical code in fast instruction RAM
-6. **Zero Allocation**: No malloc/free in mining loop
-7. **Minimal Display**: 5-second refresh, text-only
+1. **Hardware SHA256 Acceleration**: ESP32's SHA peripheral handles double-SHA256 at 413 cycles/nonce
+2. **Overlapped Register Writes**: Fill next SHA block while current block is being hashed
+3. **Midstate Caching**: First SHA256 block computed once per job (SW path)
+4. **Nonce-Only Updates**: Only 4 bytes change per hash attempt
+5. **Loop Unrolling**: 64 SHA256 rounds fully unrolled (SW path)
+6. **Early Rejection**: Check hash MSB before full comparison
+7. **Zero Allocation**: No malloc/free in mining loop
+8. **GCC Optimization Split**: -Os for SW mining code, -O2 for HW mining code
 
 ---
 
@@ -291,10 +318,13 @@ pdqmanager  # Starts web server at http://localhost:5000
 - [x] SHA256 optimization pass 2 (W2 pre-computation, loop reduction)
 - [x] Code review - Round 7 (critical W2_SIG0_8 bug fix)
 - [x] Memory usage analysis and optimization
-- [ ] Hardware testing and performance validation
-- [ ] Inline assembly optimization (Xtensa ROTR)
-- [ ] Hardware SHA256 integration (ESP32-S3)
-- [ ] Achieve ≥1000 KH/s target
+- [x] Hardware testing and performance validation (58 KH/s SW baseline)
+- [x] ESP32 hardware SHA256 integration (472 KH/s)
+- [x] Overlapped register write optimization (627 KH/s)
+- [x] Hardware diagnostic: midstate caching impossible on ESP32-D0
+- [x] IRAM testing (no benefit for HW path, reverted)
+- [ ] Further HW SHA optimization (target ≥1000 KH/s)
+- [ ] Xtensa inline assembly exploration
 
 ### Phase 4: Tools
 

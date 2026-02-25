@@ -1,8 +1,8 @@
 # Agent Memory - PDQminer Project
 
 > **Purpose**: Persistent context document for agent continuity across sessions.
-> **Last Updated**: 2025-01-XX
-> **Status**: Architecture & Documentation Complete
+> **Last Updated**: 2025-02-14
+> **Status**: HW SHA256 Acceleration Complete - 627 KH/s
 
 ---
 
@@ -145,15 +145,18 @@ PDQminer/
 | Midstate caching | +50% | **Complete** |
 | Nonce-only update | +100% | **Complete** |
 | Full round unrolling | +30% | **Complete** |
-| IRAM placement | +10% | **Complete** |
+| IRAM placement | +10% | **Complete** (SW only - HW IRAM regressed) |
 | Dual-core mining | +95% | **Complete** |
 | **Minimal display mode** | **+10-20 KH/s** | **Complete** |
 | **Headless mode** | **+20-50 KH/s** | **Complete** |
 | W pre-computation (Pass 1-3)| +15-25% | **Complete** |
-| **Combined Target** | **>1050 KH/s** | **Pending HW test** |
+| **HW SHA256 acceleration** | **+700%** | **Complete** (472 KH/s) |
+| **Overlap register writes** | **+31%** | **Complete** (627 KH/s) |
+| **Combined Target** | **>1050 KH/s** | **In Progress** |
 
-> **Benchmark Results** (Session 25): 277 MH/s dual-core on ESP32-D0WD-V3.
-> **Live Mining** (Session 27): 54 H/s reported on ST7789 device; root cause was debug print consuming job notifications. Bugs fixed, awaiting re-test.
+> **Measured Performance**: 627 KH/s combined (HW 581 KH/s + SW 46 KH/s) on ESP32-D0WD-V3 @ 240 MHz.
+> **Key Finding**: Midstate caching is impossible on ESP32-D0 (no SHA_H_BASE register). Only ESP32-S2/S3/C3 support digest restoration.
+> **HW Mining Details**: 413 CPU cycles/nonce with overlap optimization. IRAM tested but regressed (538 vs 413 cyc).
 
 ---
 
@@ -900,13 +903,15 @@ Complete code review of all components for accuracy, security, optimization, and
 19. ~~Comprehensive code review (100% confidence)~~ **DONE**
 20. ~~SHA256 optimization pass 1~~ **DONE**
 21. ~~Code review Round 5 (100% confidence verification)~~ **DONE**
-22. ~~Hardware benchmark testing (Session 25: 277 MH/s)~~ **DONE**
+22. ~~Hardware benchmark testing (Session 25: 277 MH/s benchmark)~~ **DONE**
 23. ~~Documentation audit & synchronization (Session 26)~~ **DONE**
 24. ~~Critical bug fixes + SHA256 optimization pass 3 (Session 27)~~ **DONE**
 25. ~~Documentation audit & sync session 28~~ **DONE**
-26. Re-test on hardware: verify bug fixes resolve 54 H/s issue
-27. Measure live mining hashrate post-fix
-28. Phase D: Device API implementation (REST for PDQManager)
+26. ~~HW SHA256 engine implementation (Session 29: 472 KH/s)~~ **DONE**
+27. ~~Overlap optimization (Session 30: 627 KH/s)~~ **DONE**
+28. ~~Documentation sync for HW SHA + overlap work (Session 31)~~ **DONE**
+29. Further optimization toward ≥1000 KH/s target
+30. Phase D: Device API implementation (REST for PDQManager)
 
 ---
 
@@ -1353,6 +1358,99 @@ Comprehensive audit comparing all documentation (SDD, TDD, agent-memory) against
 - `docs/sdd.md` - Sections 4.2, 4.4, 4.5.3, 4.5.5
 - `docs/tdd.md` - Sections 4.2, 5.1
 - `docs/agents/agent-memory.md` - Performance Targets, Next Steps, Session 28
+
+**Status:** Complete
+
+---
+
+### Session 29 - Hardware SHA256 Engine Implementation
+
+User reported 478 KH/s on live mining after Session 27/28 bug fixes. Proceeded with optimization toward 1000 KH/s target.
+
+**ESP32 Hardware SHA256 Diagnostic:**
+Created `PdqSha256HwDiagnostic()` function to probe ESP32 SHA hardware capabilities at boot:
+
+| Property | Result |
+|----------|--------|
+| LOAD direction | Internal → SHA_TEXT only (read-only, midstate caching NOT possible) |
+| Auto-store after START/CONTINUE | No (explicit LOAD required) |
+| SHA_TEXT preservation | Yes (contents survive START/CONTINUE/LOAD) |
+| Overlap writes during START | **SAFE** (engine latches at trigger) |
+| Overlap writes during CONTINUE | **UNSAFE** (corrupts result) |
+| START timing | 627 CPU cycles |
+| CONTINUE timing | 627 CPU cycles |
+| LOAD timing | 562 CPU cycles |
+
+**Critical Finding - No Midstate on ESP32-D0:**
+- ESP32-D0 has **no `SHA_H_BASE` register** (only exists on ESP32-S2/S3/C3)
+- `SOC_SHA_SUPPORT_RESUME` is NOT defined for ESP32 in ESP-IDF source
+- Espressif docs: "not possible to restore a SHA digest state into the engine"
+- Each nonce requires full 3-block SHA256d (START block0 + CONTINUE block1 + START double-hash)
+
+**HW SHA Mining Engine (`PdqSha256MineBlockHw()`):**
+- Built complete HW mining loop using SHA peripheral at SHA_TEXT_BASE (0x3FF03000)
+- Dual-task architecture: MiningTaskHw on Core 0 + MiningTaskCore1 (SW) on Core 1
+- Nonce space split: HW gets 7/8 (0x20000000-0xFFFFFFFF), SW gets 1/8 (0x00000000-0x1FFFFFFF)
+- Batch sizes: HW=128K nonces, SW=4096 nonces
+- GCC push_options/pop_options to restore -O2 for HW code (SW uses -Os)
+
+**Performance:**
+- HW: ~440 KH/s (~545 cyc/nonce)
+- SW: ~46 KH/s
+- Combined: ~472 KH/s
+
+**Commit:** `23617e0` - "perf(core): ESP32 HW SHA256 acceleration" (11 files, +1190/-566)
+
+**Status:** Complete
+
+---
+
+### Session 30 - Overlap Optimization (627 KH/s)
+
+Optimized HW SHA mining loop by overlapping register writes with SHA engine computation.
+
+**Overlap Optimizations:**
+
+| Optimization | Description | Savings |
+|--------------|-------------|---------|
+| Block1 fill during Block0 START | 16 APB writes hidden behind 627-cycle START | 16 register writes |
+| Block0 half-fill during double-hash START | 8 APB writes hidden behind 627-cycle START | 8 register writes |
+| 2-write reduced padding | Only TextNV[8] and TextNV[15] differ per iteration | 14 register writes |
+| SHA_TEXT preservation | Reuse block0 SHA_TEXT[8:15] from previous overlap fill | 8 register writes |
+
+**IRAM Test:**
+- Placed `PdqSha256MineBlockHw()` in IRAM → **WORSE** (538 cyc vs 413)
+- Root cause: Flash cache already efficient for hot loops; IRAM causes bus contention
+- Decision: Reverted, keep HW mining code in flash
+
+**Performance Results:**
+- HW: 581 KH/s (413 cyc/nonce, was ~545 cyc)
+- SW: ~46 KH/s
+- Combined: **627 KH/s** (+31% from overlap)
+
+**Commit:** `7286523` - "perf(core): overlap SHA register writes for ~627 KH/s (+31%)" (4 files, +290/-28)
+
+**Status:** Complete
+
+---
+
+### Session 31 - Documentation Synchronization
+
+Updated all documentation to match current project state after HW SHA engine and overlap optimization work.
+
+**Documents Updated:**
+- `README.md` - Hashrate badge (627 KH/s), features (HW SHA, dual-task), comparison table, performance section, roadmap
+- `docs/sdd.md` - Version 1.2.0. SHA256 Engine (HW peripheral, overlap, diagnostic), Mining Task (HW+SW dual-task), Performance section (actual measured results), Implementation Status (Sections 12.14, 12.15), Future Considerations
+- `docs/tdd.md` - Version 1.2.0. Performance thresholds (HW+SW), HW SHA test cases, optimization verification table, diagnostic verification
+- `docs/agents/agent-memory.md` - Performance targets updated, sessions 29-31 added, next steps updated
+- `docs/agents/agent-prompts.md` - Updated with HW SHA context and current architecture
+
+**Key Documentation Changes:**
+- Removed "277 MH/s" references (was benchmark artifact, not live mining hashrate)
+- Updated architecture from "dual SW cores" to "HW (Core 0) + SW (Core 1)"
+- Added hardware SHA findings: no midstate on ESP32-D0, overlap safety, timing data
+- Updated all performance thresholds to reflect HW+SW combined measurement
+- Added commits 23617e0 and 7286523 to implementation history
 
 **Status:** Complete
 

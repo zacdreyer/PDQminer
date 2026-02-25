@@ -23,10 +23,12 @@ You are working on PDQminer, an open-source ESP32 Bitcoin mining firmware.
 **Key Technical Points**:
 - Pure C firmware (no C++ in hot paths)
 - PlatformIO build system
-- Dual-core mining with Core 0 (mining) and Core 1 (network/display)
-- SHA256d with midstate optimization and full round unrolling
-- IRAM_ATTR for hot functions, DRAM_ATTR for K constants
-- Three display modes: Headless (+50 KH/s), Minimal (+20 KH/s), Standard
+- Dual-task mining: HW SHA256 on Core 0 (581 KH/s) + SW SHA256 on Core 1 (~46 KH/s) = 627 KH/s
+- ESP32 hardware SHA peripheral at SHA_TEXT_BASE (0x3FF03000)
+- Overlapped register writes during SHA START operations
+- GCC push_options/pop_options: -Os for SW code, -O2 for HW code
+- Nonce split: HW 7/8 (0x20000000-0xFFFFFFFF), SW 1/8 (0x00000000-0x1FFFFFFF)
+- Midstate caching NOT possible on ESP32-D0 (no SHA_H_BASE register)
 
 **Priority**: Hashrate > UX. Every CPU cycle matters.
 
@@ -42,23 +44,31 @@ You are optimizing the SHA256 implementation for PDQminer.
 
 **Context**:
 - Read `docs/sdd.md` Section 4.1 (SHA256 Engine)
-- Target: >1050 KH/s on ESP32-D0WDQ6 @ 240MHz
-- Current architecture uses midstate caching and nonce-only updates
+- Current: 627 KH/s combined (HW 581 KH/s + SW ~46 KH/s) on ESP32-D0WDQ6 @ 240MHz
+- HW SHA engine: 413 cycles/nonce with overlapped register writes
+- SW path: Full round unrolling, midstate caching, -Os optimization
+- Midstate NOT possible on HW path (ESP32-D0 lacks SHA_H_BASE register)
 
-**Optimization Techniques to Apply**:
-1. Full round unrolling (64 rounds inline, no loop)
-2. Register optimization (minimize memory loads)
-3. Compiler flags: -O3 -flto -funroll-loops
-4. IRAM_ATTR for hot functions
-5. DRAM_ATTR for K constants (contiguous cache access)
+**Architecture**:
+- `PdqSha256MineBlockHw()` - HW SHA mining (Core 0, 128K batch, 7/8 nonce space)
+- `PdqSha256MineBlockSw()` - SW SHA mining (Core 1, 4096 batch, 1/8 nonce space)
+- `PdqSha256HwDiagnostic()` - Probes HW SHA capabilities at boot
+
+**Optimization Techniques Already Applied**:
+1. HW SHA peripheral with overlapped register writes (saves ~130 cyc/nonce)
+2. SHA_TEXT preservation between iterations (skip redundant writes)
+3. 2-write reduced padding (only TextNV[8] and TextNV[15] change per nonce)
+4. Full round unrolling in SW path (64 rounds inline)
+5. GCC push_options: -Os for SW, -O2 for HW
 6. Branch elimination (constant-time operations)
 7. No floating-point in hot path
 
 **Constraints**:
 - No heap allocation in mining loop
 - Must feed WDT every 500ms
-- Must work with dual-core (Core 0 = mining)
+- HW SHA on Core 0, SW on Core 1
 - Pure C (no C++ overhead)
+- IRAM tested and rejected for HW path (causes bus contention, regresses performance)
 
 **Benchmark after changes** using test framework in `docs/tdd.md` Section 5.
 ```
@@ -241,10 +251,11 @@ You are benchmarking PDQminer performance.
 4. **Dual-core**: Both cores mining
 
 **Target Metrics**:
-| Configuration | Minimum | Target |
-|--------------|---------|--------|
-| Single-core | 500 KH/s | 525 KH/s |
-| Dual-core | 950 KH/s | 1050 KH/s |
+| Configuration | Measured | Notes |
+|--------------|----------|-------|
+| HW SHA (Core 0) | 581 KH/s | 413 cyc/nonce, overlapped writes |
+| SW SHA (Core 1) | ~46 KH/s | Full round unrolling, midstate |
+| Combined | 627 KH/s | HW+SW dual-task |
 
 **Benchmark Command**:
 ```bash
@@ -338,12 +349,12 @@ pio test -e cyd_ili9341         # Run hardware tests
 | `docs/coding-standards.md` | Code style rules |
 | `platformio.ini` | Build configuration |
 
-### Performance Targets
-| Mode | Target |
+### Current Performance
+| Configuration | Measured |
 |------|--------|
-| Headless | >1050 KH/s |
-| Minimal | >1020 KH/s |
-| Standard | >1000 KH/s |
+| HW SHA (Core 0) | 581 KH/s |
+| SW SHA (Core 1) | ~46 KH/s |
+| Combined | 627 KH/s |
 
 ---
 
