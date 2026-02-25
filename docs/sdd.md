@@ -254,16 +254,18 @@ PDQminer/
    - ESP32-D0 has a dedicated SHA256 hardware peripheral at `SHA_TEXT_BASE` (0x3FF03000)
    - HW SHA processes one 64-byte block via START (first block) or CONTINUE (subsequent blocks)
    - Timing: START=627 CPU cycles, CONTINUE=627 CPU cycles, LOAD=562 CPU cycles
-   - HW mining achieves **581 KH/s** (413 CPU cycles/nonce) vs ~46 KH/s for SW per core
+   - HW mining achieves **~650 KH/s** (~369 CPU cycles/nonce) vs ~46 KH/s for SW per core
    - **Midstate caching is NOT possible on ESP32-D0**: No `SHA_H_BASE` register exists (only on ESP32-S2/S3/C3). LOAD copies digest from internal state to SHA_TEXT (read-only direction). Espressif docs: "not possible to restore a SHA digest state into the engine."
-   - Each double-SHA256 requires: START (block0) + CONTINUE (block1) + START (double-hash) + LOAD (read result)
+   - Each double-SHA256 requires: START (block0) + CONTINUE (block1) + LOAD (intermediate) + START (double-hash) + LOAD (final)
+   - **START→CONTINUE chaining**: Writing to CONTINUE_REG while START is busy causes the engine to auto-chain atomically (undocumented, verified by diagnostic). Eliminates idle gap between START and CONTINUE.
 
 9. **Overlapped Register Writes**
    - Writes to SHA_TEXT during START are **safe** (engine latches data at trigger)
    - Writes to SHA_TEXT during CONTINUE are **unsafe** (engine reads progressively)
    - Optimization: Fill next block's SHA_TEXT registers while current block is being hashed
    - Block1 fill (16 APB writes) overlapped with Block0 START
-   - Block0 half-fill (8 APB writes) overlapped with double-hash START
+   - Reduced double-hash overlap: only block0[8:15] via `HwShaFillBlock0Upper()` (saves 8 writes vs full block0 fill since LOAD overwrites [0:7])
+   - Padding overlap during intermediate LOAD (2 writes hidden behind LOAD latency)
    - 2-write reduced padding (only TextNV[8] and TextNV[15] differ between iterations)
 
 10. **GCC Optimization Split**
@@ -339,7 +341,7 @@ PdqError_t PdqSha256MineBlock(const PdqMiningJob_t *p_Job,
  * @return PdqOk on success (check p_Found for result)
  * @note Uses ESP32 SHA peripheral at SHA_TEXT_BASE (0x3FF03000)
  * @note Compiled with -O2 (GCC push_options)
- * @note Achieves ~581 KH/s (413 cycles/nonce) with overlap optimization
+ * @note Achieves ~650 KH/s (~369 cycles/nonce) with overlap + chaining optimization
  */
 PdqError_t PdqSha256MineBlockHw(const PdqMiningJob_t *p_Job,
                                  uint32_t *p_Nonce,
@@ -383,8 +385,8 @@ void PdqSha256HwDiagnostic(void);
 │  │                      │           │                      │   │
 │  │ [HW SHA256 Engine]   │           │ [SW SHA256 Engine]   │
 │  │ PdqSha256MineBlockHw │           │ PdqSha256MineBlock   │   │
-│  │ ~581 KH/s            │           │ ~46 KH/s             │   │
-│  │ 413 cyc/nonce        │           │                      │   │
+│  │ ~650 KH/s            │           │ ~46 KH/s             │   │
+│  │ ~369 cyc/nonce        │           │                      │   │
 │  │ Batch: 128K nonces   │           │ Batch: 4096 nonces   │   │
 │  └──────────┬───────────┘           └──────────┬───────────┘   │
 │             │                                   │                │
@@ -397,11 +399,11 @@ void PdqSha256HwDiagnostic(void);
 │                    │ (xQueueSend)   │                           │
 │                    └────────────────┘                           │
 │                                                                  │
-│  Combined: 627 KH/s (HW 581 + SW 46)                           │
+│  Combined: ~700 KH/s (HW ~650 + SW ~46)                        │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-> **Note**: Core 0 also runs WiFi/system tasks, but the HW SHA engine yields between 128K-nonce batches (~225ms each at 581 KH/s), preventing IDLE task WDT starvation.
+> **Note**: Core 0 also runs WiFi/system tasks, but the HW SHA engine yields between 128K-nonce batches (~200ms each at ~650 KH/s), preventing IDLE task WDT starvation.
 
 **Task Configuration**:
 
@@ -412,7 +414,7 @@ void PdqSha256HwDiagnostic(void);
 | Core Affinity | Pinned (`xTaskCreatePinnedToCore`) | No migration overhead |
 | WDT Feed | Time-based, every 1000ms (SW) / per-batch (HW) | Balance throughput/safety |
 | SW Nonce Batch | 4096 | Per SW-core batch size |
-| HW Nonce Batch | 131072 (128K) | Per HW batch size (~225ms at 581 KH/s) |
+| HW Nonce Batch | 131072 (128K) | Per HW batch size (~200ms at ~650 KH/s) |
 | Nonce Split | SW 1/8 (0x00-0x1F), HW 7/8 (0x20-0xFF) | HW gets majority of nonce space |
 | Stack Placement | DRAM (default) | Not IRAM to preserve IRAM for code |
 
@@ -463,7 +465,7 @@ PDQ_IRAM_ATTR static void MiningTaskHw(void* p_Param)
             }
 
             /* HW task must yield after every batch to prevent IDLE task WDT.
-             * Each 128K batch takes ~225ms at 581 KH/s. */
+             * Each 128K batch takes ~200ms at ~650 KH/s. */
             esp_task_wdt_reset();
             vTaskDelay(1);
 
@@ -984,10 +986,11 @@ Users can enter configuration mode via:
 | Dual-core (SW+SW) | +95% | ~58 KH/s (2 cores) | Complete |
 | **HW SHA256 peripheral** | **+700%** | **472 KH/s** | **Complete** |
 | **Overlap register writes** | **+31%** | **627 KH/s** | **Complete** |
+| **START→CONTINUE chaining** | **+12%** | **~700 KH/s** | **Complete** |
 | Midstate on HW | N/A | **Impossible on ESP32-D0** | Investigated |
 | IRAM for HW path | +5% est | **Regressed (538 vs 413 cyc)** | Rejected |
 
-**Current Hashrate**: 627 KH/s (HW 581 KH/s + SW 46 KH/s)
+**Current Hashrate**: ~700 KH/s (HW ~650 KH/s + SW ~46 KH/s)
 **Target**: ≥1000 KH/s
 
 ### 6.2 Memory Budget
@@ -1213,8 +1216,8 @@ build_flags =
 
 | Build Target | Display Mode | Platform | Measured Hashrate |
 |--------------|--------------|----------|-------------------|
-| `cyd_ili9341` | Minimal | ESP32 | **627 KH/s** |
-| `cyd_st7789` | Minimal | ESP32 | **627 KH/s** |
+| `cyd_ili9341` | Minimal | ESP32 | **~700 KH/s** |
+| `cyd_st7789` | Minimal | ESP32 | **~700 KH/s** |
 | `esp32_headless` | Headless | ESP32 | ~630+ KH/s (est.) |
 | `cyd_ili9341_headless` | Headless | ESP32 | ~630+ KH/s (est.) |
 | `benchmark` | Headless | ESP32 | Raw measurement |
@@ -2207,8 +2210,8 @@ int32_t PdqMdnsInit(void)
 
 | Component          | File                           | Status       | Notes                                                             |
 | --------------------| --------------------------------| --------------| -------------------------------------------------------------------|
-| SHA256 Engine      | `src/core/sha256_engine.c`     | **Complete** | SW: 64-round unrolled, midstate, W pre-computation. HW: ESP32 SHA peripheral with overlap optimization, 413 cyc/nonce, boot-time diagnostic |
-| Mining Task        | `src/core/mining_task.c`       | **Complete** | Dual-task: HW (Core 0, 581 KH/s) + SW (Core 1, 46 KH/s) = 627 KH/s. Nonce split 7/8 HW + 1/8 SW |
+| SHA256 Engine      | `src/core/sha256_engine.c`     | **Complete** | SW: 64-round unrolled, midstate, W pre-computation. HW: ESP32 SHA peripheral with overlap + START→CONTINUE chaining, ~369 cyc/nonce, boot-time diagnostic |
+| Mining Task        | `src/core/mining_task.c`       | **Complete** | Dual-task: HW (Core 0, ~650 KH/s) + SW (Core 1, ~46 KH/s) = ~700 KH/s. Nonce split 7/8 HW + 1/8 SW |
 | Board HAL          | `src/hal/board_hal.c`          | **Complete** | WDT, temp, heap, chip ID using ESP-IDF APIs                       |
 | Benchmark Firmware | `src/main_benchmark.cpp`       | **Complete** | Single/dual-core hashrate measurement                             |
 | Stratum Client     | `src/stratum/stratum_client.c` | **Complete** | Full V1 protocol, job building, merkle root computation           |

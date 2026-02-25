@@ -23,7 +23,7 @@
   <img src="https://img.shields.io/badge/status-in%20development-orange" alt="Status"/>
   <img src="https://img.shields.io/badge/platform-ESP32-blue" alt="Platform"/>
   <img src="https://img.shields.io/badge/license-GPL--3.0-green" alt="License"/>
-  <img src="https://img.shields.io/badge/hashrate-627%20KH%2Fs-brightgreen" alt="Hashrate"/>
+  <img src="https://img.shields.io/badge/hashrate-~700%20KH%2Fs-brightgreen" alt="Hashrate"/>
 </p>
 
 ---
@@ -32,7 +32,7 @@
 
 PDQminer is a **fully open-source** Bitcoin mining ecosystem for ESP32 microcontrollers, consisting of:
 
-1. **PDQminer Firmware** - Maximum hashrate mining firmware (627 KH/s with HW SHA256 acceleration)
+1. **PDQminer Firmware** - Maximum hashrate mining firmware (~700 KH/s with HW SHA256 acceleration)
 2. **PDQFlasher** - Cross-platform firmware flashing tool with auto-detection
 3. **PDQManager** - Fleet management application for monitoring multiple miners
 
@@ -43,7 +43,7 @@ PDQminer is a **fully open-source** Bitcoin mining ecosystem for ESP32 microcont
 | Aspect | NerdMiner | NMMiner | PDQminer |
 |--------|-----------|---------|----------|
 | **Open Source** | ✅ Yes | ❌ Closed | ✅ 100% Open |
-| **Hashrate (ESP32-D0)** | ~55 KH/s | ~1000 KH/s | **627 KH/s** |
+| **Hashrate (ESP32-D0)** | ~55 KH/s | ~1000 KH/s | **~700 KH/s** |
 | **Configuration** | Captive Portal | Captive Portal | Captive Portal |
 | **Fleet Management** | ❌ No | ❌ No | ✅ **PDQManager** |
 | **Auto-Flash Tool** | ❌ No | ✅ Yes | ✅ **PDQFlasher** |
@@ -56,8 +56,10 @@ PDQminer is a **fully open-source** Bitcoin mining ecosystem for ESP32 microcont
 ### PDQminer Firmware
 
 - **Maximum Hashrate SHA256d Engine**
-  - ESP32 hardware SHA256 acceleration (581 KH/s on HW peripheral)
+  - ESP32 hardware SHA256 acceleration (~650 KH/s on HW peripheral)
   - Overlapped register writes (fill next block during SHA computation)
+  - START→CONTINUE operation chaining (zero-gap atomic transition)
+  - Reduced double-hash overlap (only block0[8:15] via `HwShaFillBlock0Upper`)
   - Software midstate precomputation (first 64 bytes cached)
   - Nonce-only block updates (16 bytes per hash)
   - Fully unrolled SHA256 rounds (SW path, no loop overhead)
@@ -65,9 +67,9 @@ PDQminer is a **fully open-source** Bitcoin mining ecosystem for ESP32 microcont
   - Boot-time hardware diagnostic and validation
 
 - **Dual-Task Architecture (HW + SW)**
-  - Core 0: Hardware SHA256 engine (~581 KH/s) - 7/8 of nonce space
+  - Core 0: Hardware SHA256 engine (~650 KH/s) - 7/8 of nonce space
   - Core 1: Software SHA256 engine (~46 KH/s) - 1/8 of nonce space
-  - Combined throughput: **627 KH/s**
+  - Combined throughput: **~700 KH/s**
   - Zero contention design - no mutex in hash loop
 
 - **Stratum V1 Protocol**

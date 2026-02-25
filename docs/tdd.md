@@ -691,8 +691,8 @@ void Benchmark_Sha256Double_Throughput(void)
 
 /* Minimum acceptable hashrates (fail build if not met) */
 #define MIN_SW_SINGLE_CORE_KHS  25.0f    /* SW single core minimum */
-#define MIN_HW_SINGLE_CORE_KHS  500.0f   /* HW single core minimum */
-#define MIN_COMBINED_KHS        550.0f   /* HW + SW combined minimum */
+#define MIN_HW_SINGLE_CORE_KHS  600.0f   /* HW single core minimum */
+#define MIN_COMBINED_KHS        650.0f   /* HW + SW combined minimum */
 #define TARGET_COMBINED_KHS    1000.0f   /* Target performance */
 
 /**
@@ -733,7 +733,7 @@ void Test_Performance_SwSingleCore_MinimumHashrate(void)
 /**
  * @brief   HW SHA256 single-core hashrate regression test
  * @note    HW path uses ESP32 SHA peripheral with overlap optimization
- * @note    MUST achieve at least 500 KH/s (current: 581 KH/s, 413 cyc/nonce)
+ * @note    MUST achieve at least 600 KH/s (current: ~650 KH/s, ~369 cyc/nonce)
  */
 void Test_Performance_HwSingleCore_MinimumHashrate(void)
 {
@@ -765,7 +765,7 @@ void Test_Performance_HwSingleCore_MinimumHashrate(void)
 
 /**
  * @brief   Combined HW+SW hashrate regression test
- * @note    MUST achieve at least 550 KH/s combined (current: 627 KH/s)
+ * @note    MUST achieve at least 650 KH/s combined (current: ~700 KH/s)
  */
 void Test_Performance_Combined_MinimumHashrate(void)
 {

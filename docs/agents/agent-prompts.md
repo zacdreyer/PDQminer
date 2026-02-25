@@ -23,7 +23,7 @@ You are working on PDQminer, an open-source ESP32 Bitcoin mining firmware.
 **Key Technical Points**:
 - Pure C firmware (no C++ in hot paths)
 - PlatformIO build system
-- Dual-task mining: HW SHA256 on Core 0 (581 KH/s) + SW SHA256 on Core 1 (~46 KH/s) = 627 KH/s
+- Dual-task mining: HW SHA256 on Core 0 (~650 KH/s) + SW SHA256 on Core 1 (~46 KH/s) = ~700 KH/s
 - ESP32 hardware SHA peripheral at SHA_TEXT_BASE (0x3FF03000)
 - Overlapped register writes during SHA START operations
 - GCC push_options/pop_options: -Os for SW code, -O2 for HW code
@@ -44,24 +44,27 @@ You are optimizing the SHA256 implementation for PDQminer.
 
 **Context**:
 - Read `docs/sdd.md` Section 4.1 (SHA256 Engine)
-- Current: 627 KH/s combined (HW 581 KH/s + SW ~46 KH/s) on ESP32-D0WDQ6 @ 240MHz
-- HW SHA engine: 413 cycles/nonce with overlapped register writes
+- Current: ~700 KH/s combined (HW ~650 KH/s + SW ~46 KH/s) on ESP32-D0WDQ6 @ 240MHz
+- HW SHA engine: ~369 cycles/nonce with overlapped register writes + START→CONTINUE chaining
 - SW path: Full round unrolling, midstate caching, -Os optimization
 - Midstate NOT possible on HW path (ESP32-D0 lacks SHA_H_BASE register)
 
 **Architecture**:
 - `PdqSha256MineBlockHw()` - HW SHA mining (Core 0, 128K batch, 7/8 nonce space)
 - `PdqSha256MineBlockSw()` - SW SHA mining (Core 1, 4096 batch, 1/8 nonce space)
-- `PdqSha256HwDiagnostic()` - Probes HW SHA capabilities at boot
+- `PdqSha256HwDiagnostic()` - Probes HW SHA capabilities and operation chaining at boot
 
 **Optimization Techniques Already Applied**:
 1. HW SHA peripheral with overlapped register writes (saves ~130 cyc/nonce)
 2. SHA_TEXT preservation between iterations (skip redundant writes)
 3. 2-write reduced padding (only TextNV[8] and TextNV[15] change per nonce)
-4. Full round unrolling in SW path (64 rounds inline)
-5. GCC push_options: -Os for SW, -O2 for HW
-6. Branch elimination (constant-time operations)
-7. No floating-point in hot path
+4. START→CONTINUE operation chaining (undocumented, zero-gap atomic transition)
+5. Reduced double-hash overlap via `HwShaFillBlock0Upper()` (only [8:15], saves 8 writes)
+6. Padding overlap during intermediate LOAD (hide 2 writes behind LOAD latency)
+7. Full round unrolling in SW path (64 rounds inline)
+8. GCC push_options: -Os for SW, -O2 for HW
+9. Branch elimination (constant-time operations)
+10. No floating-point in hot path
 
 **Constraints**:
 - No heap allocation in mining loop

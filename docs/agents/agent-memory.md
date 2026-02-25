@@ -2,7 +2,7 @@
 
 > **Purpose**: Persistent context document for agent continuity across sessions.
 > **Last Updated**: 2025-02-14
-> **Status**: HW SHA256 Acceleration Complete - 627 KH/s
+> **Status**: HW SHA256 Optimization - ~700 KH/s
 
 ---
 
@@ -152,11 +152,12 @@ PDQminer/
 | W pre-computation (Pass 1-3)| +15-25% | **Complete** |
 | **HW SHA256 acceleration** | **+700%** | **Complete** (472 KH/s) |
 | **Overlap register writes** | **+31%** | **Complete** (627 KH/s) |
+| **START→CONTINUE chaining** | **+12%** | **Complete** (~700 KH/s) |
 | **Combined Target** | **>1050 KH/s** | **In Progress** |
 
-> **Measured Performance**: 627 KH/s combined (HW 581 KH/s + SW 46 KH/s) on ESP32-D0WD-V3 @ 240 MHz.
+> **Measured Performance**: ~700 KH/s combined (HW ~650 KH/s + SW ~46 KH/s) on ESP32-D0WD-V3 @ 240 MHz.
 > **Key Finding**: Midstate caching is impossible on ESP32-D0 (no SHA_H_BASE register). Only ESP32-S2/S3/C3 support digest restoration.
-> **HW Mining Details**: 413 CPU cycles/nonce with overlap optimization. IRAM tested but regressed (538 vs 413 cyc).
+> **HW Mining Details**: ~369 CPU cycles/nonce with overlap + chaining optimization. START→CONTINUE chaining (undocumented ESP32 behavior) queues CONTINUE during START for zero-gap atomic transition. IRAM tested but regressed (538 vs 413 cyc).
 
 ---
 
@@ -1451,6 +1452,52 @@ Updated all documentation to match current project state after HW SHA engine and
 - Added hardware SHA findings: no midstate on ESP32-D0, overlap safety, timing data
 - Updated all performance thresholds to reflect HW+SW combined measurement
 - Added commits 23617e0 and 7286523 to implementation history
+
+**Status:** Complete
+
+---
+
+### Session 32 - HW SHA Operation Chaining (~700 KH/s)
+
+Further optimized HW SHA mining loop by discovering undocumented ESP32 SHA operation chaining and refining overlap strategy.
+
+**Baseline**: 616 KH/s verified on device (prior commit was 627 KH/s measured differently).
+
+**Discovery - SHA Operation Chaining:**
+Writing to `CONTINUE_REG` while `START` is still busy causes the engine to auto-chain START→CONTINUE with zero gap (atomic transition). This is undocumented ESP32 behavior, verified by diagnostic tests:
+
+| Test | Result |
+|------|--------|
+| Queue CONTINUE during START | **PASS** (chaining works!) |
+| Queue LOAD during CONTINUE | FAIL (not supported) |
+| Queue START during LOAD | FAIL (queued - unexpected behavior) |
+
+**Optimizations Applied:**
+
+| Optimization | Description | Impact |
+|--------------|-------------|--------|
+| START→CONTINUE chaining | Queue CONTINUE during START, zero-gap atomic transition | ~14 cyc/nonce saved |
+| Reduced double-hash overlap | New `HwShaFillBlock0Upper()` writes only block0[8:15] (saves 8 writes vs full since LOAD overwrites [0:7]) | ~24 cyc/nonce saved |
+| Padding overlap during LOAD | Move 2 padding writes (TextNV[8], TextNV[15]) to overlap with intermediate LOAD | ~6 cyc/nonce saved |
+| LOAD→START chaining | Tested, caused perf regression (630 vs 659 KH/s) | **Rejected** (race with padding writes) |
+
+**Diagnostic Benchmark (10K nonces averaged):**
+- Batch benchmark: ~395 cyc/nonce (~607 KH/s HW only)
+- Chained benchmark: ~381 cyc/nonce (~629 KH/s HW only)
+- Actual mining: ~369 cyc/nonce (~650 KH/s HW effective)
+
+**Performance Results:**
+- HW: ~650 KH/s (~369 cyc/nonce, was 413 cyc)
+- SW: ~46 KH/s
+- Combined: **~700 KH/s** (+13% from baseline, readings: 697, 698, 710, 695, 709 KH/s)
+
+**Hardware Ceiling Analysis:**
+Each SHA256d requires 5 sequential HW ops: START(block0) → CONTINUE(block1) → LOAD(intermediate) → START(double-hash) → LOAD(final). Without SHA_H_BASE (midstate injection), block0 START+CONTINUE cannot be eliminated. Hard floor: ~335 HW cycles + ~34 cycles overhead = ~369 cyc/nonce. Combined theoretical ceiling: ~700-750 KH/s on ESP32-D0.
+
+**Path to 1000 KH/s**: Requires ESP32-S2/S3/C3 (has SHA_H_BASE and SOC_SHA_SUPPORT_RESUME for midstate injection).
+
+**Files Modified:**
+- `src/core/sha256_engine.c` - `HwShaFillBlock0Upper()`, START→CONTINUE chaining in hot loop, expanded diagnostic with queuing tests and batch benchmarks
 
 **Status:** Complete
 

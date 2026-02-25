@@ -740,12 +740,23 @@ static inline __attribute__((always_inline)) bool HwShaReadDigestSwapIf(uint32_t
 /* Write first 8 words of block0 to SHA_TEXT[0:7].
  * Used in the hot loop where SHA_TEXT[8:15] already has block0[8:15]
  * from the previous iteration's overlapped fill. */
-PDQ_IRAM_ATTR static inline __attribute__((always_inline)) void HwShaFillBlock0Half(const uint32_t* p_Data) {
+static inline __attribute__((always_inline)) void HwShaFillBlock0Half(const uint32_t* p_Data) {
     uint32_t* Reg = (uint32_t*)SHA_TEXT_BASE;
     Reg[0]  = p_Data[0];  Reg[1]  = p_Data[1];
     Reg[2]  = p_Data[2];  Reg[3]  = p_Data[3];
     Reg[4]  = p_Data[4];  Reg[5]  = p_Data[5];
     Reg[6]  = p_Data[6];  Reg[7]  = p_Data[7];
+}
+
+/* Write last 8 words of block0 to SHA_TEXT[8:15].
+ * Used during double-hash START overlap: only [8:15] needs filling because
+ * the subsequent LOAD overwrites [0:7] with the final hash anyway. */
+static inline __attribute__((always_inline)) void HwShaFillBlock0Upper(const uint32_t* p_Data) {
+    uint32_t* Reg = (uint32_t*)SHA_TEXT_BASE;
+    Reg[8]  = p_Data[8];  Reg[9]  = p_Data[9];
+    Reg[10] = p_Data[10]; Reg[11] = p_Data[11];
+    Reg[12] = p_Data[12]; Reg[13] = p_Data[13];
+    Reg[14] = p_Data[14]; Reg[15] = p_Data[15];
 }
 
 PdqError_t PdqSha256MineBlockHw(const PdqMiningJob_t* p_Job, uint32_t* p_Nonce, bool* p_Found) {
@@ -759,8 +770,7 @@ PdqError_t PdqSha256MineBlockHw(const PdqMiningJob_t* p_Job, uint32_t* p_Nonce, 
 
     uint32_t TargetHigh = p_Job->Target[0];
 
-    /* Direct register pointers - avoid sha_ll_* computed addresses in hot loop.
-     * SHA_256 = SHA_1 + 0x20 offset. */
+    /* Direct register pointers - avoid sha_ll_* computed addresses in hot loop. */
     volatile uint32_t* const StartReg    = (volatile uint32_t*)SHA_256_START_REG;
     volatile uint32_t* const ContinueReg = (volatile uint32_t*)SHA_256_CONTINUE_REG;
     volatile uint32_t* const LoadReg     = (volatile uint32_t*)SHA_256_LOAD_REG;
@@ -775,34 +785,29 @@ PdqError_t PdqSha256MineBlockHw(const PdqMiningJob_t* p_Job, uint32_t* p_Nonce, 
     /* === First iteration: full block0 fill (16 words) since SHA_TEXT is cold === */
     HwShaFillBlock(Block0);
     *StartReg = 1;
-    /* OVERLAP: fill block1 while block0 START runs (safe: START latches data at trigger) */
+    /* OVERLAP: fill block1 while block0 START runs */
     HwShaFillUpperBlock(Block1, __builtin_bswap32(Nonce));
-    HwShaWaitIdle();
-
+    /* CHAIN: queue CONTINUE during START (engine auto-chains START→CONTINUE).
+     * Verified by diagnostic: engine transitions START→CONTINUE atomically. */
     *ContinueReg = 1;
     HwShaWaitIdle();
 
-    /* Double-hash padding: after CONTINUE, SHA_TEXT still has block1 data.
-     * block1[8:15] = {0, 0, 0, 0, 0, 0, 0, 0x280}
-     * We need:       {0x80000000, 0, 0, 0, 0, 0, 0, 0x100}
-     * Only words [8] and [15] differ. */
+    /* LOAD intermediate hash + overlap padding during LOAD.
+     * LOAD writes [0:7] only; padding at [8],[15] doesn't conflict.
+     * After CONTINUE, [9:14] are already 0 from block1 padding. */
+    *LoadReg = 1;
     TextNV[8]  = 0x80000000;
     TextNV[15] = 0x00000100;
-
-    /* LOAD intermediate hash to SHA_TEXT[0:7] */
-    *LoadReg = 1;
     HwShaWaitIdle();
 
-    /* Second SHA256: SHA_TEXT = [intermediate_hash, double_padding] */
+    /* Double-hash START + overlap only block0[8:15] (saves 8 writes vs full).
+     * [0:7] writes would be wasted - the final LOAD overwrites them. */
     *StartReg = 1;
-    /* OVERLAP: fill block0 for next iteration while 2nd hash runs.
-     * After this, SHA_TEXT[0:15] = block0. Then LOAD overwrites only [0:7]
-     * with the final hash, leaving SHA_TEXT[8:15] = block0[8:15] intact. */
-    HwShaFillBlock(Block0);
+    HwShaFillBlock0Upper(Block0);
     HwShaWaitIdle();
 
+    /* Final LOAD: read hash (APB stalls until LOAD completes) */
     *LoadReg = 1;
-    /* Read final hash (APB stalls until LOAD completes) */
     if (HwShaReadDigestSwapIf(FinalHash)) {
         if (FinalHash[0] <= TargetHigh) {
             if (CheckTarget(FinalHash, p_Job->Target)) {
@@ -817,30 +822,35 @@ PdqError_t PdqSha256MineBlockHw(const PdqMiningJob_t* p_Job, uint32_t* p_Nonce, 
     if (Nonce == NonceEnd) { esp_sha_unlock_engine(SHA2_256); return PdqOk; }
     Nonce++;
 
-    /* === Hot loop: SHA_TEXT[8:15] already has block0[8:15] from overlap === */
+    /* === Hot loop ===
+     * Optimizations applied:
+     *   1. START→CONTINUE chaining (queue CONTINUE during START, zero-gap)
+     *   2. Padding overlap during intermediate LOAD (hide 2 writes in LOAD time)
+     *   3. Reduced double-hash overlap: only block0[8:15] (8 vs 16 writes)
+     *   4. SHA_TEXT[8:15] = block0[8:15] preserved across iterations (half-fill) */
     for (;;) {
-        /* Block0: only fill [0:7] since [8:15] is preserved from overlap fill */
+        /* Block0: only fill [0:7] since [8:15] preserved from previous overlap */
         HwShaFillBlock0Half(Block0);
         *StartReg = 1;
-        /* OVERLAP: fill block1 during block0 START */
+        /* OVERLAP: fill block1 during START (writes safe: START latched at trigger) */
         HwShaFillUpperBlock(Block1, __builtin_bswap32(Nonce));
-        HwShaWaitIdle();
-
+        /* CHAIN: queue CONTINUE during START */
         *ContinueReg = 1;
+        /* Wait for START+CONTINUE to both complete (atomic transition) */
         HwShaWaitIdle();
 
-        /* Minimal double-hash padding: only 2 words differ from block1 residual */
+        /* LOAD intermediate hash + overlap padding during LOAD */
+        *LoadReg = 1;
         TextNV[8]  = 0x80000000;
         TextNV[15] = 0x00000100;
-
-        *LoadReg = 1;
         HwShaWaitIdle();
 
+        /* Double-hash START + overlap block0[8:15] only */
         *StartReg = 1;
-        /* OVERLAP: fill block0 for next iteration during 2nd hash */
-        HwShaFillBlock(Block0);
+        HwShaFillBlock0Upper(Block0);
         HwShaWaitIdle();
 
+        /* Final LOAD + hash check */
         *LoadReg = 1;
 
         if (HwShaReadDigestSwapIf(FinalHash)) {
@@ -1046,6 +1056,192 @@ void PdqSha256HwDiagnostic(void) {
     while (*BusyReg) {}
     __asm__ volatile("rsr %0, ccount" : "=a"(t1));
     printf("%lu cyc\n", (unsigned long)(t1 - t0));
+
+    /* === Test 6: Operation queuing ===
+     * Can we write CONTINUE while START is still busy?
+     * If so, the engine would auto-chain: START → CONTINUE with zero gap. */
+
+    /* Reference: normal START → wait → CONTINUE */
+    for (int i = 0; i < 16; i++) TextNV[i] = block0[i];
+    *StartReg = 1;
+    while (*BusyReg) {}
+    for (int i = 0; i < 16; i++) TextNV[i] = block1[i];
+    *ContinueReg = 1;
+    while (*BusyReg) {}
+    TextNV[8]  = 0x80000000;
+    TextNV[15] = 0x00000100;
+    *LoadReg = 1;
+    while (*BusyReg) {}
+    *StartReg = 1;
+    while (*BusyReg) {}
+    *LoadReg = 1;
+    while (*BusyReg) {}
+    uint32_t queueRef[8];
+    for (int i = 0; i < 8; i++) queueRef[i] = TextV[i];
+
+    /* Test A: Queue CONTINUE during START (write block1 then ContinueReg before START finishes) */
+    for (int i = 0; i < 16; i++) TextNV[i] = block0[i];
+    *StartReg = 1;
+    for (int i = 0; i < 16; i++) TextNV[i] = block1[i]; /* overlap */
+    *ContinueReg = 1;  /* queue CONTINUE while START may still be busy */
+    while (*BusyReg) {}
+    TextNV[8]  = 0x80000000;
+    TextNV[15] = 0x00000100;
+    *LoadReg = 1;
+    while (*BusyReg) {}
+    *StartReg = 1;
+    while (*BusyReg) {}
+    *LoadReg = 1;
+    while (*BusyReg) {}
+    uint32_t queueA[8];
+    for (int i = 0; i < 8; i++) queueA[i] = TextV[i];
+    bool queueContMatch = true;
+    for (int i = 0; i < 8; i++) {
+        if (queueRef[i] != queueA[i]) { queueContMatch = false; break; }
+    }
+    printf("[DIAG] Queue CONTINUE during START: %s\n",
+           queueContMatch ? "PASS (chaining works!)" : "FAIL (not supported)");
+
+    /* Test B: Queue LOAD during CONTINUE */
+    for (int i = 0; i < 16; i++) TextNV[i] = block0[i];
+    *StartReg = 1;
+    while (*BusyReg) {}
+    for (int i = 0; i < 16; i++) TextNV[i] = block1[i];
+    *ContinueReg = 1;
+    *LoadReg = 1;  /* queue LOAD while CONTINUE may still be busy */
+    while (*BusyReg) {}
+    TextNV[8]  = 0x80000000;
+    TextNV[15] = 0x00000100;
+    /* LOAD should have already copied digest to [0:7] */
+    *StartReg = 1;
+    while (*BusyReg) {}
+    *LoadReg = 1;
+    while (*BusyReg) {}
+    uint32_t queueB[8];
+    for (int i = 0; i < 8; i++) queueB[i] = TextV[i];
+    bool queueLoadMatch = true;
+    for (int i = 0; i < 8; i++) {
+        if (queueRef[i] != queueB[i]) { queueLoadMatch = false; break; }
+    }
+    printf("[DIAG] Queue LOAD during CONTINUE: %s\n",
+           queueLoadMatch ? "PASS (chaining works!)" : "FAIL (not supported)");
+
+    /* Test C: Queue START during LOAD */
+    for (int i = 0; i < 16; i++) TextNV[i] = block0[i];
+    *StartReg = 1;
+    while (*BusyReg) {}
+    for (int i = 0; i < 16; i++) TextNV[i] = block1[i];
+    *ContinueReg = 1;
+    while (*BusyReg) {}
+    TextNV[8]  = 0x80000000;
+    TextNV[15] = 0x00000100;
+    *LoadReg = 1;
+    while (*BusyReg) {}
+    /* Now LOAD is done. Try queue START during a new LOAD: */
+    *StartReg = 1;
+    while (*BusyReg) {}
+    *LoadReg = 1;
+    *StartReg = 1;  /* queue START during final LOAD */
+    while (*BusyReg) {}
+    /* If queued START ran, engine would have processed SHA_TEXT again (wrong) */
+    *LoadReg = 1;
+    while (*BusyReg) {}
+    uint32_t queueC[8];
+    for (int i = 0; i < 8; i++) queueC[i] = TextV[i];
+    bool queueStartMatch = true;
+    for (int i = 0; i < 8; i++) {
+        if (queueRef[i] != queueC[i]) { queueStartMatch = false; break; }
+    }
+    printf("[DIAG] Queue START during LOAD: %s (expect FAIL if queued)\n",
+           queueStartMatch ? "PASS (ignored)" : "FAIL (queued - unexpected)");
+
+    /* === Timing: full-chain test (if queuing works) === */
+    {
+        const int N = 10000;
+        /* Warm up */
+        for (int n = 0; n < 100; n++) {
+            for (int i = 0; i < 16; i++) TextNV[i] = block0[i];
+            *StartReg = 1;
+            for (int i = 0; i < 16; i++) TextNV[i] = block1[i];
+            while (*BusyReg) {}
+            *ContinueReg = 1;
+            while (*BusyReg) {}
+            *LoadReg = 1;
+            TextNV[8]  = 0x80000000;
+            TextNV[15] = 0x00000100;
+            while (*BusyReg) {}
+            *StartReg = 1;
+            TextNV[8]  = block0[8]; TextNV[9]  = block0[9];
+            TextNV[10] = block0[10]; TextNV[11] = block0[11];
+            TextNV[12] = block0[12]; TextNV[13] = block0[13];
+            TextNV[14] = block0[14]; TextNV[15] = block0[15];
+            while (*BusyReg) {}
+            *LoadReg = 1;
+            while (*BusyReg) {}
+        }
+
+        /* Measure N iterations of the optimized hot loop */
+        __asm__ volatile("rsr %0, ccount" : "=a"(t0));
+        for (int n = 0; n < N; n++) {
+            for (int i = 0; i < 8; i++) TextNV[i] = block0[i];
+            *StartReg = 1;
+            for (int i = 0; i < 16; i++) TextNV[i] = block1[i];
+            TextNV[3] = __builtin_bswap32(n);
+            while (*BusyReg) {}
+            *ContinueReg = 1;
+            while (*BusyReg) {}
+            *LoadReg = 1;
+            TextNV[8]  = 0x80000000;
+            TextNV[15] = 0x00000100;
+            while (*BusyReg) {}
+            *StartReg = 1;
+            TextNV[8]  = block0[8]; TextNV[9]  = block0[9];
+            TextNV[10] = block0[10]; TextNV[11] = block0[11];
+            TextNV[12] = block0[12]; TextNV[13] = block0[13];
+            TextNV[14] = block0[14]; TextNV[15] = block0[15];
+            while (*BusyReg) {}
+            *LoadReg = 1;
+            while (*BusyReg) {}
+        }
+        __asm__ volatile("rsr %0, ccount" : "=a"(t1));
+
+        uint32_t Total = t1 - t0;
+        uint32_t PerNonce = Total / N;
+        uint32_t Khs = 240000000UL / PerNonce / 1000;
+        printf("[DIAG] Batch %d nonces: %lu total, %lu cyc/nonce, ~%lu KH/s (HW only)\n",
+               N, (unsigned long)Total, (unsigned long)PerNonce, (unsigned long)Khs);
+
+        /* If queuing works, measure chained version (START→CONTINUE + LOAD→START) */
+        if (queueContMatch) {
+            __asm__ volatile("rsr %0, ccount" : "=a"(t0));
+            for (int n = 0; n < N; n++) {
+                for (int i = 0; i < 8; i++) TextNV[i] = block0[i];
+                *StartReg = 1;
+                for (int i = 0; i < 16; i++) TextNV[i] = block1[i];
+                TextNV[3] = __builtin_bswap32(n);
+                *ContinueReg = 1;  /* chained during START */
+                while (*BusyReg) {}
+                *LoadReg = 1;
+                TextNV[8]  = 0x80000000;
+                TextNV[15] = 0x00000100;
+                *StartReg = 1;  /* chained during LOAD */
+                while (*BusyReg) {}
+                *LoadReg = 1;
+                TextNV[8]  = block0[8]; TextNV[9]  = block0[9];
+                TextNV[10] = block0[10]; TextNV[11] = block0[11];
+                TextNV[12] = block0[12]; TextNV[13] = block0[13];
+                TextNV[14] = block0[14]; TextNV[15] = block0[15];
+                while (*BusyReg) {}
+            }
+            __asm__ volatile("rsr %0, ccount" : "=a"(t1));
+
+            Total = t1 - t0;
+            PerNonce = Total / N;
+            Khs = 240000000UL / PerNonce / 1000;
+            printf("[DIAG] CHAINED %d nonces: %lu total, %lu cyc/nonce, ~%lu KH/s (HW only)\n",
+                   N, (unsigned long)Total, (unsigned long)PerNonce, (unsigned long)Khs);
+        }
+    }
 
     esp_sha_unlock_engine(SHA2_256);
 }
