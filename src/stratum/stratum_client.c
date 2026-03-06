@@ -22,9 +22,10 @@
 #include <errno.h>
 #endif
 
-#define JSON_ID_SUBSCRIBE   1
-#define JSON_ID_AUTHORIZE   2
-#define JSON_ID_SUBMIT_BASE 100
+#define JSON_ID_SUBSCRIBE       1
+#define JSON_ID_AUTHORIZE       2
+#define JSON_ID_SUGGEST_DIFF    3
+#define JSON_ID_SUBMIT_BASE     100
 
 typedef struct {
     PdqStratumState_t State;
@@ -35,7 +36,7 @@ typedef struct {
     uint8_t           Extranonce1[PDQ_STRATUM_MAX_EXTRANONCE_LEN];
     uint8_t           Extranonce1Len;
     uint32_t          Extranonce2Size;
-    uint32_t          Difficulty;
+    double            Difficulty;
     uint32_t          SubmitId;
     PdqStratumJob_t   CurrentJob;
     bool              HasNewJob;
@@ -85,6 +86,29 @@ static void ReverseBytes(uint8_t* p_Data, size_t Len)
         p_Data[i] = p_Data[Len - 1 - i];
         p_Data[Len - 1 - i] = Tmp;
     }
+}
+
+/* Escape a string for safe embedding in JSON values.
+ * Replaces " with \" and \ with \\\.  Output is null-terminated.
+ * Returns number of characters written (excluding null), or -1 if buffer too small. */
+static int32_t JsonEscapeString(const char* p_In, char* p_Out, size_t MaxLen)
+{
+    size_t j = 0;
+    for (size_t i = 0; p_In[i] != '\0'; i++) {
+        if (p_In[i] == '"' || p_In[i] == '\\') {
+            if (j + 2 >= MaxLen) return -1;
+            p_Out[j++] = '\\';
+            p_Out[j++] = p_In[i];
+        } else if ((uint8_t)p_In[i] < 0x20) {
+            /* Skip control characters */
+            continue;
+        } else {
+            if (j + 1 >= MaxLen) return -1;
+            p_Out[j++] = p_In[i];
+        }
+    }
+    p_Out[j] = '\0';
+    return (int32_t)j;
 }
 
 static PdqError_t SendJson(const char* p_Json)
@@ -192,9 +216,15 @@ static PdqError_t HandleSubscribeResult(const char* p_Json)
     if (p_Quote) {
         while (*p_Quote == ',' || *p_Quote == ' ') p_Quote++;
         s_Ctx.Extranonce2Size = (uint32_t)atoi(p_Quote);
+        if (s_Ctx.Extranonce2Size > PDQ_STRATUM_MAX_EXTRANONCE_LEN) {
+            s_Ctx.Extranonce2Size = PDQ_STRATUM_MAX_EXTRANONCE_LEN;
+        }
     }
 
     s_Ctx.State = StratumStateSubscribed;
+    printf("[STRATUM] Extranonce1(%d bytes): ", s_Ctx.Extranonce1Len);
+    for (int i = 0; i < s_Ctx.Extranonce1Len; i++) printf("%02x", s_Ctx.Extranonce1[i]);
+    printf(" | Extranonce2Size: %u\n", (unsigned)s_Ctx.Extranonce2Size);
     return PdqOk;
 }
 
@@ -217,8 +247,12 @@ static PdqError_t HandleSetDifficulty(const char* p_Json)
 
     double Diff = strtod(p_Arr + 1, NULL);
     printf("[STRATUM] Pool requested difficulty: %f\n", Diff);
-    s_Ctx.Difficulty = (uint32_t)(Diff > 0 ? Diff : 1);
-    printf("[STRATUM] Using difficulty: %lu\n", (unsigned long)s_Ctx.Difficulty);
+    /* Enforce minimum difficulty of 1.0 to avoid "Difficulty too low" rejections.
+     * Some pools (e.g. public-pool.io) send set_difficulty below their actual
+     * acceptance threshold. */
+    if (Diff < 1.0) Diff = 1.0;
+    s_Ctx.Difficulty = Diff > 0.0 ? Diff : 1.0;
+    printf("[STRATUM] Using difficulty: %f\n", s_Ctx.Difficulty);
     return PdqOk;
 }
 
@@ -256,14 +290,24 @@ static PdqError_t HandleNotify(const char* p_Json)
                     break;
                 case 1:
                     HexToBytes(Buffer, Job.PrevBlockHash, 32);
-                    ReverseBytes(Job.PrevBlockHash, 32);
+                    /* Stratum prevhash: each 4-byte word is byte-reversed (LE).
+                     * Swap bytes within each word to get internal byte order
+                     * for the block header. (NOT a full 32-byte reverse.) */
+                    for (int w = 0; w < 8; w++) {
+                        uint32_t* pw = (uint32_t*)(Job.PrevBlockHash + w * 4);
+                        *pw = __builtin_bswap32(*pw);
+                    }
                     break;
-                case 2:
-                    Job.Coinbase1Len = (uint16_t)HexToBytes(Buffer, Job.Coinbase1, PDQ_STRATUM_MAX_COINBASE_LEN);
+                case 2: {
+                    int32_t Len = HexToBytes(Buffer, Job.Coinbase1, PDQ_STRATUM_MAX_COINBASE_LEN);
+                    Job.Coinbase1Len = (Len > 0) ? (uint16_t)Len : 0;
                     break;
-                case 3:
-                    Job.Coinbase2Len = (uint16_t)HexToBytes(Buffer, Job.Coinbase2, PDQ_STRATUM_MAX_COINBASE_LEN);
+                }
+                case 3: {
+                    int32_t Len = HexToBytes(Buffer, Job.Coinbase2, PDQ_STRATUM_MAX_COINBASE_LEN);
+                    Job.Coinbase2Len = (Len > 0) ? (uint16_t)Len : 0;
                     break;
+                }
                 case 5:
                     Job.Version = (uint32_t)strtoul(Buffer, NULL, 16);
                     break;
@@ -288,7 +332,9 @@ static PdqError_t HandleNotify(const char* p_Json)
                         if (p_End == NULL) break;
                         size_t Len = (size_t)(p_End - p);
                         if (Len == 64) {
-                            HexToBytes(p, Job.MerkleBranches[Job.MerkleBranchCount], 32);
+                            memcpy(Buffer, p, 64);
+                            Buffer[64] = '\0';
+                            HexToBytes(Buffer, Job.MerkleBranches[Job.MerkleBranchCount], 32);
                             Job.MerkleBranchCount++;
                         }
                         p = p_End + 1;
@@ -352,7 +398,7 @@ PdqError_t PdqStratumInit(void)
     memset(&s_Ctx, 0, sizeof(s_Ctx));
     s_Ctx.Socket = -1;
     s_Ctx.State = StratumStateDisconnected;
-    s_Ctx.Difficulty = 1;
+    s_Ctx.Difficulty = 1.0;
     return PdqOk;
 }
 
@@ -426,6 +472,17 @@ PdqError_t PdqStratumSubscribe(void)
     return SendJson(s_Ctx.SendBuffer);
 }
 
+PdqError_t PdqStratumSuggestDifficulty(double Difficulty)
+{
+    if (s_Ctx.Socket < 0) return PdqErrorNotConnected;
+
+    snprintf(s_Ctx.SendBuffer, sizeof(s_Ctx.SendBuffer),
+             "{\"id\":%d,\"method\":\"mining.suggest_difficulty\",\"params\":[%g]}",
+             JSON_ID_SUGGEST_DIFF, Difficulty);
+
+    return SendJson(s_Ctx.SendBuffer);
+}
+
 PdqError_t PdqStratumAuthorize(const char* p_Worker, const char* p_Password)
 {
     if (s_Ctx.State != StratumStateSubscribed) return PdqErrorNotConnected;
@@ -436,10 +493,16 @@ PdqError_t PdqStratumAuthorize(const char* p_Worker, const char* p_Password)
     strncpy(s_Ctx.Password, p_Password ? p_Password : "x", PDQ_MAX_PASSWORD_LEN);
     s_Ctx.Password[PDQ_MAX_PASSWORD_LEN] = '\0';
 
+    /* Escape worker and password for safe JSON embedding */
+    char EscWorker[PDQ_MAX_WORKER_LEN * 2 + 1];
+    char EscPassword[PDQ_MAX_PASSWORD_LEN * 2 + 1];
+    JsonEscapeString(s_Ctx.Worker, EscWorker, sizeof(EscWorker));
+    JsonEscapeString(s_Ctx.Password, EscPassword, sizeof(EscPassword));
+
     s_Ctx.State = StratumStateAuthorizing;
     snprintf(s_Ctx.SendBuffer, sizeof(s_Ctx.SendBuffer),
              "{\"id\":%d,\"method\":\"mining.authorize\",\"params\":[\"%s\",\"%s\"]}",
-             JSON_ID_AUTHORIZE, s_Ctx.Worker, s_Ctx.Password);
+             JSON_ID_AUTHORIZE, EscWorker, EscPassword);
 
     return SendJson(s_Ctx.SendBuffer);
 }
@@ -451,28 +514,18 @@ PdqError_t PdqStratumSubmitShare(const char* p_JobId, uint32_t Extranonce2, uint
 
     char Extranonce2Hex[17] = {0};
     uint8_t Extranonce2Bytes[8];
-    for (int i = 0; i < (int)s_Ctx.Extranonce2Size; i++) {
+    uint32_t En2Size = s_Ctx.Extranonce2Size;
+    if (En2Size > PDQ_STRATUM_MAX_EXTRANONCE_LEN) En2Size = PDQ_STRATUM_MAX_EXTRANONCE_LEN;
+    for (int i = 0; i < (int)En2Size; i++) {
         Extranonce2Bytes[i] = (uint8_t)(Extranonce2 >> (i * 8));
     }
-    BytesToHex(Extranonce2Bytes, s_Ctx.Extranonce2Size, Extranonce2Hex);
+    BytesToHex(Extranonce2Bytes, En2Size, Extranonce2Hex);
 
     char NTimeHex[9] = {0};
-    uint8_t NTimeBytes[4] = {
-        (uint8_t)(NTime),
-        (uint8_t)(NTime >> 8),
-        (uint8_t)(NTime >> 16),
-        (uint8_t)(NTime >> 24)
-    };
-    BytesToHex(NTimeBytes, 4, NTimeHex);
+    snprintf(NTimeHex, sizeof(NTimeHex), "%08x", NTime);
 
     char NonceHex[9] = {0};
-    uint8_t NonceBytes[4] = {
-        (uint8_t)(Nonce),
-        (uint8_t)(Nonce >> 8),
-        (uint8_t)(Nonce >> 16),
-        (uint8_t)(Nonce >> 24)
-    };
-    BytesToHex(NonceBytes, 4, NonceHex);
+    snprintf(NonceHex, sizeof(NonceHex), "%08x", Nonce);
 
     s_Ctx.SubmitId++;
     snprintf(s_Ctx.SendBuffer, sizeof(s_Ctx.SendBuffer),
@@ -486,6 +539,14 @@ PdqError_t PdqStratumSubmitShare(const char* p_JobId, uint32_t Extranonce2, uint
 PdqError_t PdqStratumProcess(void)
 {
     if (s_Ctx.Socket < 0) return PdqErrorNotConnected;
+
+    /* Guard against buffer-full condition: if buffer has no room for more data
+     * and no complete line was found, discard the buffer to prevent deadlock. */
+    if (s_Ctx.RecvLen >= PDQ_STRATUM_RECV_BUFFER_SIZE - 1) {
+        printf("[STRATUM] WARN: recv buffer full (%u bytes), discarding\n", s_Ctx.RecvLen);
+        s_Ctx.RecvLen = 0;
+        s_Ctx.RecvBuffer[0] = '\0';
+    }
 
     fd_set ReadSet;
     struct timeval Timeout = {0, 100000};
@@ -554,7 +615,7 @@ PdqError_t PdqStratumGetJob(PdqStratumJob_t* p_Job)
     return PdqOk;
 }
 
-uint32_t PdqStratumGetDifficulty(void)
+double PdqStratumGetDifficulty(void)
 {
     return s_Ctx.Difficulty;
 }
@@ -572,23 +633,47 @@ uint8_t PdqStratumGetExtranonce2Size(void)
     return (uint8_t)s_Ctx.Extranonce2Size;
 }
 
-static void DifficultyToTarget(uint32_t Difficulty, uint32_t* p_Target)
+static void DifficultyToTarget(double Difficulty, uint32_t* p_Target)
 {
-    if (Difficulty == 0) Difficulty = 1;
+    /* Bitcoin pool difficulty 1 target (pdiff) as LE uint256 (pn[] format):
+     *   Number: 0x00000000_FFFF0000_00000000_00000000_00000000_00000000_00000000_00000000
+     *   = 0xFFFF * 2^208
+     *   pn[7]=0, pn[6]=0xFFFF0000, pn[5..0]=0  (pn[7] = most significant word)
+     *
+     * For arbitrary difficulty D: target = pdiff1 / D
+     * We compute pn[7]:pn[6] from 0x00000000FFFF0000 / D
+     * Hash comparison: pn[7] first (most significant), down to pn[0]. */
+    if (Difficulty <= 0.0) Difficulty = 1.0;
 
-    memset(p_Target, 0xFF, 32);
+    memset(p_Target, 0, 32);  /* All words zero */
 
-    uint64_t Base = 0x0000FFFF00000000ULL;
-    uint64_t TargetVal = Base / (uint64_t)Difficulty;
-
-    p_Target[0] = (uint32_t)(TargetVal >> 32);
-    p_Target[1] = (uint32_t)(TargetVal & 0xFFFFFFFF);
+    if (Difficulty < 1.0) {
+        /* Fractional difficulty: target > pdiff1.
+         * Compute full division; result may overflow into pn[7]. */
+        double top64_f = (double)0x00000000FFFF0000ULL / Difficulty;
+        if (top64_f >= (double)UINT64_MAX) {
+            /* Overflow: accept (almost) everything */
+            memset(p_Target, 0xFF, 32);
+        } else {
+            uint64_t top64 = (uint64_t)top64_f;
+            p_Target[7] = (uint32_t)(top64 >> 32);
+            p_Target[6] = (uint32_t)(top64 & 0xFFFFFFFF);
+            /* Fill lower words with 0xFF for easy targets */
+            memset(p_Target, 0xFF, 24);  /* p_Target[0..5] = 0xFFFFFFFF */
+        }
+    } else {
+        /* Integer difficulty >= 1: standard case */
+        uint64_t top64 = 0x00000000FFFF0000ULL / (uint64_t)Difficulty;
+        p_Target[7] = (uint32_t)(top64 >> 32);
+        p_Target[6] = (uint32_t)(top64 & 0xFFFFFFFF);
+        /* p_Target[5..0] remain 0 from memset */
+    }
 }
 
 PdqError_t PdqStratumBuildMiningJob(const PdqStratumJob_t* p_StratumJob,
                                      const uint8_t* p_Extranonce1, uint8_t Extranonce1Len,
                                      uint32_t Extranonce2, uint8_t Extranonce2Len,
-                                     uint32_t Difficulty,
+                                     double Difficulty,
                                      PdqMiningJob_t* p_MiningJob)
 {
     if (p_StratumJob == NULL || p_MiningJob == NULL) return PdqErrorInvalidParam;
@@ -598,6 +683,16 @@ PdqError_t PdqStratumBuildMiningJob(const PdqStratumJob_t* p_StratumJob,
     uint8_t Coinbase[600];
     size_t CoinbaseLen = 0;
 
+    /* Bounds-check total coinbase length before assembly.
+     * Max: Coinbase1(256) + Extranonce1(8) + Extranonce2(8) + Coinbase2(256) = 528. */
+    size_t TotalLen = (size_t)p_StratumJob->Coinbase1Len + Extranonce1Len +
+                      Extranonce2Len + (size_t)p_StratumJob->Coinbase2Len;
+    if (TotalLen > sizeof(Coinbase)) {
+        printf("[STRATUM] ERROR: coinbase too large (%u bytes), max %u\n",
+               (unsigned)TotalLen, (unsigned)sizeof(Coinbase));
+        return PdqErrorInvalidJob;
+    }
+
     memcpy(Coinbase + CoinbaseLen, p_StratumJob->Coinbase1, p_StratumJob->Coinbase1Len);
     CoinbaseLen += p_StratumJob->Coinbase1Len;
 
@@ -606,6 +701,8 @@ PdqError_t PdqStratumBuildMiningJob(const PdqStratumJob_t* p_StratumJob,
         CoinbaseLen += Extranonce1Len;
     }
 
+    /* Clamp Extranonce2Len to prevent overflow */
+    if (Extranonce2Len > PDQ_STRATUM_MAX_EXTRANONCE_LEN) Extranonce2Len = PDQ_STRATUM_MAX_EXTRANONCE_LEN;
     for (int i = 0; i < Extranonce2Len; i++) {
         Coinbase[CoinbaseLen++] = (uint8_t)(Extranonce2 >> (i * 8));
     }
@@ -616,11 +713,22 @@ PdqError_t PdqStratumBuildMiningJob(const PdqStratumJob_t* p_StratumJob,
     uint8_t MerkleRoot[32];
     PdqSha256d(Coinbase, CoinbaseLen, MerkleRoot);
 
+    printf("[DBG] CoinbaseHash: ");
+    for (int i = 0; i < 32; i++) printf("%02x", MerkleRoot[i]);
+    printf("\n");
+
     for (uint8_t i = 0; i < p_StratumJob->MerkleBranchCount; i++) {
         uint8_t Concat[64];
         memcpy(Concat, MerkleRoot, 32);
         memcpy(Concat + 32, p_StratumJob->MerkleBranches[i], 32);
         PdqSha256d(Concat, 64, MerkleRoot);
+        if (i < 2) {
+            printf("[DBG] Branch[%d]: ", i);
+            for (int j = 0; j < 32; j++) printf("%02x", p_StratumJob->MerkleBranches[i][j]);
+            printf(" -> MR: ");
+            for (int j = 0; j < 32; j++) printf("%02x", MerkleRoot[j]);
+            printf("\n");
+        }
     }
 
     uint8_t Header[80];
@@ -643,6 +751,23 @@ PdqError_t PdqStratumBuildMiningJob(const PdqStratumJob_t* p_StratumJob,
     Header[75] = (uint8_t)(p_StratumJob->NBits >> 24);
 
     memset(Header + 76, 0, 4);
+
+    /* Debug: print extranonce1, merkle root, coinbase, and full header */
+    printf("[DBG] EN1(%d): ", Extranonce1Len);
+    for (int i = 0; i < Extranonce1Len; i++) printf("%02x", p_Extranonce1[i]);
+    printf("\n");
+    printf("[DBG] EN2(%d): ", Extranonce2Len);
+    for (int i = 0; i < Extranonce2Len; i++) printf("%02x", (uint8_t)(Extranonce2 >> (i * 8)));
+    printf("\n");
+    printf("[DBG] Coinbase(%d): ", (int)CoinbaseLen);
+    for (size_t i = 0; i < CoinbaseLen; i++) printf("%02x", Coinbase[i]);
+    printf("\n");
+    printf("[DBG] MerkleRoot: ");
+    for (int i = 0; i < 32; i++) printf("%02x", MerkleRoot[i]);
+    printf("\n");
+    printf("[DBG] Header(80B): ");
+    for (int i = 0; i < 80; i++) printf("%02x", Header[i]);
+    printf("\n");
 
     PdqSha256Midstate(Header, p_MiningJob->Midstate);
 

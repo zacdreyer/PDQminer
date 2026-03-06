@@ -1,7 +1,7 @@
 # PDQminer Software Design Document (SDD)
 
-> **Version**: 1.2.0
-> **Last Updated**: 2025-02-14
+> **Version**: 1.3.0
+> **Last Updated**: 2026-03-06
 > **Status**: Active
 > **Owner**: PDQminer Team
 
@@ -253,11 +253,13 @@ PDQminer/
 8. **ESP32 Hardware SHA256 Acceleration**
    - ESP32-D0 has a dedicated SHA256 hardware peripheral at `SHA_TEXT_BASE` (0x3FF03000)
    - HW SHA processes one 64-byte block via START (first block) or CONTINUE (subsequent blocks)
-   - Timing: START=627 CPU cycles, CONTINUE=627 CPU cycles, LOAD=562 CPU cycles
-   - HW mining achieves **~650 KH/s** (~369 CPU cycles/nonce) vs ~46 KH/s for SW per core
-   - **Midstate caching is NOT possible on ESP32-D0**: No `SHA_H_BASE` register exists (only on ESP32-S2/S3/C3). LOAD copies digest from internal state to SHA_TEXT (read-only direction). Espressif docs: "not possible to restore a SHA digest state into the engine."
-   - Each double-SHA256 requires: START (block0) + CONTINUE (block1) + LOAD (intermediate) + START (double-hash) + LOAD (final)
+   - Timing (individual, with printf overhead): START=628 CPU cycles, CONTINUE=628 CPU cycles, LOAD=25 CPU cycles
+   - Effective hot-loop timing: ~107 CPU cycles per SHA block (batch-derived), ~25 CPU cycles per LOAD
+   - HW mining achieves **~909 KH/s** (~264 CPU cycles/nonce) vs ~40 KH/s for SW per core
+   - **Midstate caching is NOT possible on ESP32-D0**: No `SHA_H_BASE` register exists (only on ESP32-S2/S3/C3). LOAD copies digest from internal state to SHA_TEXT (read-only direction). Espressif docs: "not possible to restore a SHA digest state into the engine." Probing undocumented registers at SHA_BASE+0x40 (matching ESP32-S2/S3's SHA_H_BASE offset) confirmed: reads return zeros, writes have no effect on engine state.
+   - Each double-SHA256 requires: START (block0) + CONTINUE (block1) + LOAD (intermediate) + START (double-hash) + LOAD (final) = 3 SHA blocks + 2 LOADs per nonce
    - **START→CONTINUE chaining**: Writing to CONTINUE_REG while START is busy causes the engine to auto-chain atomically (undocumented, verified by diagnostic). Eliminates idle gap between START and CONTINUE.
+   - **Performance ceiling**: 3×~107 + 2×~25 + ~20 overhead ≈ 391 cyc/nonce (diagnostic), ~264 cyc/nonce (production with NOP pipeline + cold path) = **~909 KH/s HW + ~40 KH/s SW = ~949 KH/s combined.**
 
 9. **Overlapped Register Writes**
    - Writes to SHA_TEXT during START are **safe** (engine latches data at trigger)
@@ -273,7 +275,27 @@ PDQminer/
     - HW mining code compiled with `-O2` via GCC `push_options`/`pop_options` pragmas
     - IRAM tested for HW path but regressed (538 vs 413 cyc/nonce) - flash cache already efficient
 
-9. **Cache Optimization**
+11. **NOP-Timed Pipeline (HW SHA)**
+    - Replaced BUSY register polling with calibrated NOP delays for ~35% speedup
+    - Binary search calibrated minimum NOP counts per pipeline phase:
+      - NOP_57=55 (CONTINUE→LOAD wait), NOP_50=43 (double-hash START→LOAD wait)
+      - NOP_15=14 (final LOAD→hash check), NOP_13=13 (block1 fill→CONTINUE)
+      - NOP_9=9 (LOAD→double-hash START), NOP_8=1 (START next iter→bound check)
+    - Single `asm volatile("nop.n\n..." ::: "memory")` blocks prevent compiler reordering
+    - Achieves ~264 cycles/nonce (was ~364 with BUSY polling)
+
+12. **Noinline Cold Path Extraction**
+    - `HwCheckHashCandidate()` marked `__attribute__((noinline))` — isolates 8× `Bswap32` calls
+    - Reduces hot loop register pressure: GCC allocates more registers for block0 caching
+    - Hot loop stack frame: 64 bytes, only 1 register spill (b0_1 at a1+28)
+    - Candidate check rate: ~1 in 65536 hashes triggers cold path (l16ui pre-filter)
+
+13. **Inline l16ui Hash Pre-filter**
+    - Custom Xtensa `l16ui` (load 16-bit unsigned immediate) reads SHA_TEXT[7] lower 16 bits
+    - Rejects 99.998% of candidates in 1 cycle — only calls `HwCheckHashCandidate` when lower 16 bits are zero
+    - For difficulty ≥1, SHA_TEXT[7] must be fully zero; checking lower half is sufficient as pre-filter
+
+14. **Cache Optimization**
    - K constants in contiguous DRAM array (cache-friendly)
    - Mining context fits in L1 data cache
    - Avoid cache thrashing between cores (separate context instances)
@@ -341,7 +363,7 @@ PdqError_t PdqSha256MineBlock(const PdqMiningJob_t *p_Job,
  * @return PdqOk on success (check p_Found for result)
  * @note Uses ESP32 SHA peripheral at SHA_TEXT_BASE (0x3FF03000)
  * @note Compiled with -O2 (GCC push_options)
- * @note Achieves ~650 KH/s (~369 cycles/nonce) with overlap + chaining optimization
+ * @note Achieves ~909 KH/s (~264 cycles/nonce) with NOP pipeline + cold path extraction
  */
 PdqError_t PdqSha256MineBlockHw(const PdqMiningJob_t *p_Job,
                                  uint32_t *p_Nonce,
@@ -987,10 +1009,12 @@ Users can enter configuration mode via:
 | **HW SHA256 peripheral** | **+700%** | **472 KH/s** | **Complete** |
 | **Overlap register writes** | **+31%** | **627 KH/s** | **Complete** |
 | **START→CONTINUE chaining** | **+12%** | **~700 KH/s** | **Complete** |
+| **NOP pipeline** | **+35%** | **~909 KH/s HW** | **Complete** |
+| **Noinline cold path** | included | **~949 KH/s combined** | **Complete** |
 | Midstate on HW | N/A | **Impossible on ESP32-D0** | Investigated |
 | IRAM for HW path | +5% est | **Regressed (538 vs 413 cyc)** | Rejected |
 
-**Current Hashrate**: ~700 KH/s (HW ~650 KH/s + SW ~46 KH/s)
+**Current Hashrate**: ~949 KH/s (HW ~909 KH/s + SW ~40 KH/s)
 **Target**: ≥1000 KH/s
 
 ### 6.2 Memory Budget
@@ -2436,6 +2460,67 @@ Overlapping SHA_TEXT register writes with SHA engine computation.
 **Commits:**
 - `23617e0`: HW SHA256 engine implementation (+1190/-566 lines, 11 files)
 - `7286523`: Overlap optimization (+290/-28 lines, 4 files)
+
+### 12.16 NOP Pipeline Optimization (Sessions 34+)
+
+Replaced BUSY register polling with calibrated NOP delays for a 35% speedup in the HW SHA mining loop.
+
+**NOP Binary Search Results:**
+
+| Phase | Position | NOP Count | Purpose |
+|-------|----------|-----------|---------|
+| NOP_13 | After block1 fill, before CONTINUE | 13 | Wait for block0 START completion |
+| NOP_57 | Between CONTINUE and LOAD | 55 | Wait for block1 CONTINUE completion |
+| NOP_9 | Between LOAD and START (double-hash) | 9 | Wait for intermediate LOAD completion |
+| NOP_50 | Between START (double-hash) and LOAD (final) | 43 | Wait for double-hash START completion |
+| NOP_15 | After final LOAD, before hash check | 14 | Wait for final LOAD completion |
+| NOP_8 | After START (next iter), before bound check | 1 | Minimal START queue time |
+
+**Additional Optimizations:**
+
+| Optimization | Description | Impact |
+|--------------|-------------|--------|
+| Noinline cold path | `HwCheckHashCandidate()` extracted with `__attribute__((noinline))` | Reduced hot loop register pressure |
+| l16ui pre-filter | Inline Xtensa `l16ui` reads 16-bit SHA_TEXT, rejects 99.998% in 1 cycle | Eliminates cold path calls |
+| Block1Buf elimination | Direct writes to SHA_TEXT instead of intermediate buffer | Reduced memory traffic |
+| b0 register caching | Block0 SHA_TEXT words cached in local variables across iterations | Fewer memory loads per nonce |
+
+**Performance Results:**
+
+| Metric | Before (BUSY polling) | After (NOP pipeline) |
+|--------|----------------------|---------------------|
+| HW cycles/nonce | ~364 | ~264 |
+| HW hashrate | ~660 KH/s | ~909 KH/s |
+| SW hashrate | ~46 KH/s | ~40 KH/s |
+| Combined | ~700 KH/s | **949 KH/s** |
+| Stack frame | ~96 bytes | 64 bytes (1 spill) |
+
+### 12.17 Security Review Round 12
+
+Comprehensive security audit identifying and fixing 6 bugs + 2 security issues across 3 files.
+
+**Bugs Fixed:**
+
+| # | File | Issue | Severity | Fix |
+|---|------|-------|----------|-----|
+| 1 | stratum_client.c | `HexToBytes(-1)` cast to `uint16_t` = 65535 → coinbase buffer overflow | CRITICAL | Validate return, set length to 0 on error |
+| 2 | stratum_client.c | `Extranonce2Size` unclamped → buffer overflow in `SubmitShare` | CRITICAL | Clamp to `PDQ_STRATUM_MAX_EXTRANONCE_LEN` (8) |
+| 3 | sha256_engine.c | `HwCorrectnessTest`/`HwMiningLoopTest` missing non-ESP32 stubs | BUG | Added stubs returning true in `#else` block |
+| 4 | main.cpp | `Worker[128]` too small for `wallet(64).worker(128)` = 193 chars | BUG | Sized to `PDQ_MAX_WALLET_LEN + 1 + PDQ_MAX_WORKER_LEN + 1` |
+
+**Security Issues Fixed:**
+
+| # | File | Issue | Fix |
+|---|------|-------|-----|
+| 5 | stratum_client.c | No JSON escaping for worker/password → JSON injection | Added `JsonEscapeString()` helper |
+| 6 | stratum_client.c | Recv buffer full → `recv(0)` returns 0 → disconnect | Added buffer-full guard with discard and warning |
+
+**Additional Hardening:**
+- Total coinbase length validated before assembly in `BuildMiningJob`
+- Extranonce2Len clamped in `BuildMiningJob` as defense-in-depth
+
+**Build Verification:** SUCCESS (RAM: 16.5%, Flash: 63.8%)
+**Hardware Verification:** All boot tests PASS, mining loop test PASS, hashrate 949 KH/s confirmed
 
 ---
 

@@ -56,6 +56,8 @@ typedef struct {
 
 typedef struct {
     uint32_t HashRate;
+    uint32_t HashRateSw;  /* Core 1 SW hashrate (H/s) */
+    uint32_t HashRateHw;  /* Core 0 HW hashrate (H/s) */
     uint64_t TotalHashes;
     uint32_t SharesAccepted;
     uint32_t SharesRejected;

@@ -1,8 +1,8 @@
 # Agent Memory - PDQminer Project
 
 > **Purpose**: Persistent context document for agent continuity across sessions.
-> **Last Updated**: 2025-02-14
-> **Status**: HW SHA256 Optimization - ~700 KH/s
+> **Last Updated**: 2026-03-06
+> **Status**: NOP Pipeline Optimization - ~949 KH/s
 
 ---
 
@@ -153,11 +153,14 @@ PDQminer/
 | **HW SHA256 acceleration** | **+700%** | **Complete** (472 KH/s) |
 | **Overlap register writes** | **+31%** | **Complete** (627 KH/s) |
 | **START→CONTINUE chaining** | **+12%** | **Complete** (~700 KH/s) |
-| **Combined Target** | **>1050 KH/s** | **In Progress** |
+| **NOP pipeline** | **+35%** | **Complete** (~909 KH/s HW) |
+| **Noinline cold path** | included | **Complete** (~949 KH/s combined) |
+| **Combined Target** | **>1050 KH/s** | **In Progress (949 KH/s achieved)** |
 
-> **Measured Performance**: ~700 KH/s combined (HW ~650 KH/s + SW ~46 KH/s) on ESP32-D0WD-V3 @ 240 MHz.
+> **Measured Performance**: ~949 KH/s combined (HW ~909 KH/s + SW ~40 KH/s) on ESP32-D0WD-V3 @ 240 MHz.
 > **Key Finding**: Midstate caching is impossible on ESP32-D0 (no SHA_H_BASE register). Only ESP32-S2/S3/C3 support digest restoration.
-> **HW Mining Details**: ~369 CPU cycles/nonce with overlap + chaining optimization. START→CONTINUE chaining (undocumented ESP32 behavior) queues CONTINUE during START for zero-gap atomic transition. IRAM tested but regressed (538 vs 413 cyc).
+> **HW Mining Details**: ~264 CPU cycles/nonce with NOP pipeline + noinline cold path. NOP-timed delays replace BUSY polling for 35% speedup. NOP binary search calibrated: NOP_57=55, NOP_50=43, NOP_15=14, NOP_13=13, NOP_9=9, NOP_8=1. Hot loop stack frame: 64 bytes, 1 spill.
+> **Pool Status**: First pool-accepted share on public-pool.io:3333, difficulty 1.0.
 
 ---
 
@@ -911,8 +914,11 @@ Complete code review of all components for accuracy, security, optimization, and
 26. ~~HW SHA256 engine implementation (Session 29: 472 KH/s)~~ **DONE**
 27. ~~Overlap optimization (Session 30: 627 KH/s)~~ **DONE**
 28. ~~Documentation sync for HW SHA + overlap work (Session 31)~~ **DONE**
-29. Further optimization toward ≥1000 KH/s target
-30. Phase D: Device API implementation (REST for PDQManager)
+29. ~~NOP pipeline + cold path optimization (Session 34: 949 KH/s)~~ **DONE**
+30. ~~Security audit Round 12 (Session 34: 6 bugs + 2 security issues fixed)~~ **DONE**
+31. ~~Documentation update (Session 34: SDD 1.3.0, TDD 1.3.0, README)~~ **DONE**
+32. Further optimization toward ≥1000 KH/s target (Xtensa assembly exploration)
+33. Phase D: Device API implementation (REST for PDQManager)
 
 ---
 
@@ -1498,6 +1504,103 @@ Each SHA256d requires 5 sequential HW ops: START(block0) → CONTINUE(block1) �
 
 **Files Modified:**
 - `src/core/sha256_engine.c` - `HwShaFillBlock0Upper()`, START→CONTINUE chaining in hot loop, expanded diagnostic with queuing tests and batch benchmarks
+
+**Status:** Complete
+
+---
+
+### Session 33 - Optimization Ceiling Analysis & SHA_H Probe (~700 KH/s confirmed)
+
+Comprehensive investigation of ESP32-D0 performance ceiling and attempt to discover undocumented midstate injection registers.
+
+**Compilation Optimization:**
+- Restored `-Os` for SW mining functions (was previously switched to `-O2` which regressed)
+- `-Os` outperforms `-O2` by 17% on Xtensa LX6 for SHA256 (42 vs 35.77 KH/s per core)
+- Assembly analysis: compiler at `-Os` generates 98% of theoretical optimum (5714 measured vs ~5850 minimum cycles per nonce)
+- SSA I + SRC rotation pattern used for 87% of rotations (1070 vs 166 SRLI/SLLI pairs in PdqSha256dBaked)
+
+**Corrected HW Timing Data:**
+Previous session had measurement artifacts (CONTINUE=88, LOAD=1118). Corrected values:
+- Individual: START=628, CONTINUE=628, LOAD=25 CPU cycles
+- Individual measurements inflated ~6x by printf/bus-synchronization overhead
+- Effective hot-loop: ~107 CPU cycles per SHA block (derived from batch measurement)
+- Batch diagnostic: 391 cyc/nonce = ~613 KH/s (non-chained, with loop overhead)
+- Production mining: ~364 cyc/nonce = ~660 KH/s (inlined fills, chaining)
+
+**SHA_H Register Probe (SHA_BASE+0x40):**
+On ESP32-S2/S3/C3, `SHA_H_BASE = SHA_BASE + 0x40` enables midstate injection. Probed this offset on ESP32-D0:
+- Read `SHA_BASE+0x40` through `+0x5F` after LOAD: **ALL ZEROS** (H state not mirrored)
+- Read `SHA_BASE+0x60` through `+0x7F`: also all zeros
+- Wrote saved midstate to `0x40-0x5F`, then CONTINUE: **result does NOT match reference**
+- **CONCLUSION: SHA_H registers physically do not exist on ESP32-D0**
+
+**ESP-IDF SDK Confirmation:**
+- `SOC_SHA_SUPPORT_RESUME` not defined for ESP32 (only S2/S3/C3)
+- `sha_ll_write_digest()` gated by `SOC_SHA_SUPPORT_RESUME` - never compiled for ESP32
+- Espressif docs: "not possible to restore a SHA digest state into the engine"
+
+**Performance Ceiling Analysis:**
+
+| Component | Current | Theoretical Max | Gap |
+|-----------|---------|----------------|-----|
+| HW SHA | 660 KH/s | ~680 KH/s (min overhead) | 3% |
+| SW Core 1 | 42 KH/s | ~49 KH/s (1.0 CPI) | 14% |
+| Combined | 701 KH/s | ~720 KH/s | 2.7% |
+
+**Per-nonce cycle budget** (derived from 391 cyc batch measurement):
+- 3 SHA blocks x ~107 cyc = 321 cyc (engine-limited, hardware-fixed)
+- 2 LOADs x ~25 cyc = 50 cyc (hardware-fixed)
+- CPU overhead = ~20 cyc (fills, triggers, reads, loop)
+- Total = ~391 cyc (diagnostic) or ~364 cyc (production code)
+
+**Diagnostic Fix:**
+- Test 5 (Reduced padding 2 writes) was reporting FAIL due to test design flaw: used non-zero synthetic data at block1[9:14]. Fixed to use mining-realistic block1 (zeros at positions 5-14) so 2-write and 8-write padding produce identical results.
+
+**Key Conclusions:**
+1. **~700 KH/s is 97% of the ESP32-D0 theoretical ceiling** (~720 KH/s)
+2. **1000 KH/s is physically impossible on ESP32-D0** without midstate injection
+3. **Path to 1000 KH/s requires ESP32-S3** (SHA_H_BASE + SOC_SHA_SUPPORT_RESUME)
+4. No open-source ESP32-D0 miner exceeds ~700 KH/s; PDQminer is the fastest known
+5. Project Kilo's 1035 KH/s claim on ESP32-D0 is unverifiable (closed-source)
+
+**Files Modified:**
+- `src/core/sha256_engine.c` - Restored -Os pragma placement, removed -O2 attrs from SW mining functions, added SHA_H register probe to diagnostic, fixed Test 5 reduced padding test
+- `docs/sdd.md` - Updated Section 4.1 with corrected timing data and SHA_H probe results
+- `docs/agents/agent-memory.md` - Session 33 log
+
+**Status:** Complete
+
+---
+
+### Session 34 - Security Audit & Documentation Update (~949 KH/s)
+
+Comprehensive code review of all source files for accuracy, security, optimization, and functionality. All code fixes verified on hardware.
+
+**Security Issues Found & Fixed (6 bugs + 2 security issues):**
+
+| # | File | Issue | Severity | Fix |
+|---|------|-------|----------|-----|
+| 1 | stratum_client.c | `HexToBytes(-1)` cast to `uint16_t` = 65535 → Coinbase[600] stack overflow | CRITICAL | Validate return, set length to 0 on error |
+| 2 | stratum_client.c | `Extranonce2Size` unclamped from pool → overflow `Extranonce2Bytes[8]` | CRITICAL | Clamp to `PDQ_STRATUM_MAX_EXTRANONCE_LEN` in HandleSubscribeResult |
+| 3 | stratum_client.c | No JSON escaping for Worker/Password → JSON injection risk | SECURITY | Added `JsonEscapeString()` helper (escapes `"`, `\`, strips control chars) |
+| 4 | stratum_client.c | Recv buffer full → `recv(0)` returns 0 → false disconnect | SECURITY | Buffer-full guard: discard buffer with warning |
+| 5 | stratum_client.c | Total coinbase length not validated before assembly | HARDENING | Added bounds check before memcpy |
+| 6 | stratum_client.c | Extranonce2Len unclamped in `SubmitShare` loop | HARDENING | Local `En2Size` clamped |
+| 7 | sha256_engine.c | `HwCorrectnessTest`/`HwMiningLoopTest` missing non-ESP32 stubs | BUG | Added stubs returning true in `#else` block |
+| 8 | main.cpp | `Worker[128]` too small for `wallet(64).worker(128)` = 193 chars | BUG | Sized to `PDQ_MAX_WALLET_LEN + 1 + PDQ_MAX_WORKER_LEN + 1` |
+
+**Build Verification:** SUCCESS (9.65s, RAM: 16.5%, Flash: 63.8%)
+
+**Hardware Verification:**
+- Boot test: PASS (HW vs SW MATCH, NOP vs SW MATCH)
+- Mining loop test: PASS (nonce 0x9962E301 found, SW verified)
+- Hashrate: 949 KH/s (HW: 909, SW: 40) — no regression
+
+**Documentation Updates:**
+- `README.md` — Hashrate badge 700→949, comparison table, performance history, optimization techniques, roadmap
+- `docs/sdd.md` — Version 1.3.0, NOP pipeline section (12.16), security review section (12.17), updated performance numbers
+- `docs/tdd.md` — Version 1.3.0, Round 12 review, NOP verification section (13.8), updated thresholds
+- `docs/agents/agent-memory.md` — Session 34 log, updated performance targets
 
 **Status:** Complete
 

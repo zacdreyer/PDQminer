@@ -43,6 +43,25 @@ void setup() {
     /* Run HW SHA diagnostic to determine midstate caching capability */
     PdqSha256HwDiagnostic();
 
+    /* Run HW SHA correctness test early (before WiFi) so results are
+     * always visible on serial, even if WiFi connection fails. */
+    Serial.println("[TEST] Running HW SHA correctness test...");
+    bool hwOk = PdqSha256HwCorrectnessTest();
+    Serial.printf("[TEST] Result: %s\n", hwOk ? "PASS" : "FAIL");
+    if (!hwOk) {
+        Serial.println("[TEST] CRITICAL: HW SHA failed - halting");
+        while(1) delay(1000);
+    }
+
+    /* Mining loop test: verifies NOP timing works inside the actual
+     * mining hot loop (nonce iteration, branches, register pressure). */
+    Serial.println("[LOOP-TEST] Running mining loop correctness test...");
+    bool loopOk = PdqSha256HwMiningLoopTest();
+    if (!loopOk) {
+        Serial.println("[LOOP-TEST] CRITICAL: Mining loop test failed - halting");
+        while(1) delay(1000);
+    }
+
 #ifndef PDQ_HEADLESS
     PdqDisplayInit(PdqDisplayModeMinimal);
     PdqDisplayShowMessage("PDQminer", "Initializing...");
@@ -65,8 +84,21 @@ void setup() {
     Serial.println("[DBG] WiFi init done"); Serial.flush();
     Serial.printf("[DBG] SSID='%s' len=%d\n", s_Config.Wifi.Ssid, strlen(s_Config.Wifi.Ssid));
     Serial.flush();
-    if (PdqWifiConnect(s_Config.Wifi.Ssid, s_Config.Wifi.Password) != PdqOk) {
-        Serial.println("[PDQminer] WiFi failed, starting portal...");
+
+    bool wifiOk = false;
+    for (int attempt = 1; attempt <= 3; attempt++) {
+        Serial.printf("[PDQminer] WiFi connect attempt %d/3...\n", attempt);
+        Serial.flush();
+        if (PdqWifiConnect(s_Config.Wifi.Ssid, s_Config.Wifi.Password) == PdqOk) {
+            wifiOk = true;
+            break;
+        }
+        Serial.println("[PDQminer] WiFi attempt failed, retrying...");
+        PdqWifiDisconnect();
+        delay(1000);
+    }
+    if (!wifiOk) {
+        Serial.println("[PDQminer] WiFi failed after 3 attempts, starting portal...");
         PdqWifiStartPortal();
         return;
     }
@@ -106,9 +138,14 @@ void setup() {
 
     PdqStratumGetExtranonce(s_Extranonce1, &s_Extranonce1Len);
 
-    char Worker[128];
+    /* Request a reasonable share difficulty from the pool.
+     * At ~1 MH/s, difficulty 1.0 gives ~1 share every ~4.3 seconds. */
+    PdqStratumSuggestDifficulty(1.0);
+    Serial.println("[DBG] Suggested difficulty 1.0");
+
+    char Worker[PDQ_MAX_WALLET_LEN + 1 + PDQ_MAX_WORKER_LEN + 1];
     snprintf(Worker, sizeof(Worker), "%s.%s", s_Config.WalletAddress, s_Config.WorkerName);
-    Worker[127] = '\0';
+    Worker[sizeof(Worker) - 1] = '\0';
     const char* PoolPass = s_Config.PrimaryPool.Password[0] ? s_Config.PrimaryPool.Password : "x";
     Serial.printf("[DBG] Authorizing with worker: '%s', password: '%s'\n", Worker, PoolPass);
     Serial.flush();
@@ -129,6 +166,7 @@ void setup() {
 
     PdqMiningInit();
     Serial.println("[DBG] Mining init done");
+
     PdqMiningStart();
     Serial.println("[DBG] Mining start called");
 
@@ -167,14 +205,16 @@ void loop() {
         PdqMiningJob_t Job;
         s_Extranonce2++;
 
-        uint32_t Difficulty = PdqStratumGetDifficulty();
-        Serial.printf("[DBG] Using difficulty: %lu\n", Difficulty);
+        double Difficulty = PdqStratumGetDifficulty();
 
         PdqStratumBuildMiningJob(&s_StratumJob,
                                   s_Extranonce1, s_Extranonce1Len,
                                   s_Extranonce2, PdqStratumGetExtranonce2Size(),
                                   Difficulty,
                                   &Job);
+
+        Serial.printf("[DBG] diff=%.1f target[7:6]=%08x_%08x\n",
+                      Difficulty, Job.Target[7], Job.Target[6]);
 
         Job.NonceStart = 0;
         Job.NonceEnd = 0xFFFFFFFF;
@@ -206,8 +246,9 @@ void loop() {
 
     static uint32_t s_LastSerialUpdate = 0;
     if (millis() - s_LastSerialUpdate > 10000) {
-        Serial.printf("[PDQminer] Hashrate: %lu KH/s | Shares: %lu | Blocks: %lu\n",
-                      s_Stats.HashRate / 1000, s_Stats.SharesAccepted, s_Stats.BlocksFound);
+        Serial.printf("[PDQminer] Hashrate: %lu KH/s (HW: %lu, SW: %lu) | Shares: %lu | Blocks: %lu\n",
+                      s_Stats.HashRate / 1000, s_Stats.HashRateHw / 1000, s_Stats.HashRateSw / 1000,
+                      s_Stats.SharesAccepted, s_Stats.BlocksFound);
         s_LastSerialUpdate = millis();
     }
 

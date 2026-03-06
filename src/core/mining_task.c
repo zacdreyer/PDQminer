@@ -8,6 +8,7 @@
 #include "mining_task.h"
 #include "sha256_engine.h"
 #include <string.h>
+#include <stdio.h>
 
 #if defined(ESP_PLATFORM)
 #include "freertos/FreeRTOS.h"
@@ -43,6 +44,8 @@ typedef struct {
     volatile bool           HasJob;
     volatile uint32_t       JobVersion;
     volatile uint64_t       TotalHashes;
+    volatile uint64_t       TotalHashesSw;  /* Core 1 SW hashes */
+    volatile uint64_t       TotalHashesHw;  /* Core 0 HW hashes */
     volatile uint32_t       HashRate;
     volatile uint32_t       SharesAccepted;
     volatile uint32_t       SharesRejected;
@@ -68,6 +71,34 @@ static MiningState_t s_State = {0};
 
 #if PDQ_USE_RTOS
 static void QueueShare(const PdqMiningJob_t* p_Job, uint32_t Nonce) {
+    /* SW verification: reconstruct header, SHA256d, check target */
+    uint8_t Header[80];
+    for (int i = 0; i < 20; i++) {
+        uint32_t w = __builtin_bswap32(p_Job->HeaderSwapped[i]);
+        Header[i*4+0] = (uint8_t)(w);
+        Header[i*4+1] = (uint8_t)(w >> 8);
+        Header[i*4+2] = (uint8_t)(w >> 16);
+        Header[i*4+3] = (uint8_t)(w >> 24);
+    }
+    Header[76] = (uint8_t)(Nonce);
+    Header[77] = (uint8_t)(Nonce >> 8);
+    Header[78] = (uint8_t)(Nonce >> 16);
+    Header[79] = (uint8_t)(Nonce >> 24);
+    uint8_t Hash[32];
+    PdqSha256d(Header, 80, Hash);
+    printf("[DBG] Share nonce=%08x hash=", Nonce);
+    for (int i = 31; i >= 0; i--) printf("%02x", Hash[i]);
+    printf("\n");
+    /* Check target (LE uint256) */
+    uint32_t* pH = (uint32_t*)Hash;
+    bool Valid = true;
+    for (int i = 7; i >= 0; i--) {
+        if (pH[i] > p_Job->Target[i]) { Valid = false; break; }
+        if (pH[i] < p_Job->Target[i]) break;
+    }
+    printf("[DBG] SW verify: %s (target[7:6]=%08x_%08x)\n",
+           Valid ? "PASS" : "FAIL", p_Job->Target[7], p_Job->Target[6]);
+
     PdqShareInfo_t Share;
     strncpy(Share.JobId, p_Job->JobId, 64);
     Share.JobId[64] = '\0';
@@ -108,7 +139,11 @@ PDQ_IRAM_ATTR static void MiningTaskCore1(void* p_Param) {
             bool Found;
             PdqSha256MineBlock(&Job, &Nonce, &Found);
 
-            LocalHashes += (Job.NonceEnd - Job.NonceStart + 1);
+            /* Count actual nonces processed, not full batch, when hit found early */
+            if (Found)
+                LocalHashes += (Nonce - Job.NonceStart + 1);
+            else
+                LocalHashes += (Job.NonceEnd - Job.NonceStart + 1);
 
             if (Found) {
                 QueueShare(&Job, Nonce);
@@ -124,6 +159,7 @@ PDQ_IRAM_ATTR static void MiningTaskCore1(void* p_Param) {
 
             if (Now - LastHashReport > 1000) {
                 __atomic_fetch_add(&s_State.TotalHashes, LocalHashes, __ATOMIC_RELAXED);
+                __atomic_fetch_add(&s_State.TotalHashesSw, LocalHashes, __ATOMIC_RELAXED);
                 LocalHashes = 0;
                 LastHashReport = Now;
             }
@@ -142,6 +178,7 @@ PDQ_IRAM_ATTR static void MiningTaskHw(void* p_Param) {
     uint32_t LastWdtFeed = 0;
     uint32_t LocalHashes = 0;
     uint32_t LastHashReport = 0;
+    /* printf("[MineHW] Task started on core %d\n", xPortGetCoreID()); */
 
     while (s_State.Running) {
         if (!s_State.HasJob) {
@@ -155,9 +192,11 @@ PDQ_IRAM_ATTR static void MiningTaskHw(void* p_Param) {
         Job.NonceStart = PDQ_HW_NONCE_START;
         Job.NonceEnd = PDQ_HW_NONCE_END;
         xSemaphoreGive(s_State.JobMutex);
+        /* printf("[MineHW] Got job v%u, nonce %08X-%08X\n", MyJobVersion, (unsigned)Job.NonceStart, (unsigned)Job.NonceEnd); */
 
         uint32_t Base = Job.NonceStart;
         uint32_t JobEnd = Job.NonceEnd;
+        uint32_t BatchCount = 0;
         while (s_State.Running && s_State.JobVersion == MyJobVersion) {
             Job.NonceStart = Base;
             uint32_t BatchEnd = Base + PDQ_NONCE_BATCH_SIZE_HW - 1;
@@ -167,8 +206,14 @@ PDQ_IRAM_ATTR static void MiningTaskHw(void* p_Param) {
             uint32_t Nonce;
             bool Found;
             PdqSha256MineBlockHw(&Job, &Nonce, &Found);
+            BatchCount++;
+            /* if (BatchCount <= 3) printf("[MineHW] Batch %u done, found=%d, local=%u\n", BatchCount, Found, LocalHashes); */
 
-            LocalHashes += (Job.NonceEnd - Job.NonceStart + 1);
+            /* Count actual nonces processed, not full batch, when hit found early */
+            if (Found)
+                LocalHashes += (Nonce - Job.NonceStart + 1);
+            else
+                LocalHashes += (Job.NonceEnd - Job.NonceStart + 1);
 
             if (Found) {
                 QueueShare(&Job, Nonce);
@@ -183,6 +228,7 @@ PDQ_IRAM_ATTR static void MiningTaskHw(void* p_Param) {
             uint32_t Now = xTaskGetTickCount() * portTICK_PERIOD_MS;
             if (Now - LastHashReport > 1000) {
                 __atomic_fetch_add(&s_State.TotalHashes, LocalHashes, __ATOMIC_RELAXED);
+                __atomic_fetch_add(&s_State.TotalHashesHw, LocalHashes, __ATOMIC_RELAXED);
                 LocalHashes = 0;
                 LastHashReport = Now;
             }
@@ -282,6 +328,8 @@ PdqError_t PdqMiningGetStats(PdqMinerStats_t* p_Stats) {
     if (p_Stats == NULL) return PdqErrorInvalidParam;
 
     static uint64_t LastTotalHashes = 0;
+    static uint64_t LastTotalHashesSw = 0;
+    static uint64_t LastTotalHashesHw = 0;
     static uint32_t LastStatTime = 0;
 
 #if PDQ_USE_RTOS
@@ -290,9 +338,17 @@ PdqError_t PdqMiningGetStats(PdqMinerStats_t* p_Stats) {
 
     if (Elapsed >= 1000) {
         uint64_t CurrentTotal = s_State.TotalHashes;
+        uint64_t CurrentSw = s_State.TotalHashesSw;
+        uint64_t CurrentHw = s_State.TotalHashesHw;
         uint64_t DeltaHashes = CurrentTotal - LastTotalHashes;
+        uint64_t DeltaSw = CurrentSw - LastTotalHashesSw;
+        uint64_t DeltaHw = CurrentHw - LastTotalHashesHw;
         s_State.HashRate = (uint32_t)(DeltaHashes * 1000 / Elapsed);
+        p_Stats->HashRateSw = (uint32_t)(DeltaSw * 1000 / Elapsed);
+        p_Stats->HashRateHw = (uint32_t)(DeltaHw * 1000 / Elapsed);
         LastTotalHashes = CurrentTotal;
+        LastTotalHashesSw = CurrentSw;
+        LastTotalHashesHw = CurrentHw;
         LastStatTime = Now;
     }
 

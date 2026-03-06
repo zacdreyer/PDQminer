@@ -52,6 +52,7 @@ PdqError_t PdqStratumInit(void);
 PdqError_t PdqStratumConnect(const char* p_Host, uint16_t Port);
 PdqError_t PdqStratumDisconnect(void);
 PdqError_t PdqStratumSubscribe(void);
+PdqError_t PdqStratumSuggestDifficulty(double Difficulty);
 PdqError_t PdqStratumAuthorize(const char* p_Worker, const char* p_Password);
 PdqError_t PdqStratumSubmitShare(const char* p_JobId, uint32_t Extranonce2, uint32_t Nonce, uint32_t NTime);
 PdqError_t PdqStratumProcess(void);
@@ -61,13 +62,13 @@ bool              PdqStratumIsReady(void);
 bool              PdqStratumHasNewJob(void);
 PdqStratumState_t PdqStratumGetState(void);
 PdqError_t        PdqStratumGetJob(PdqStratumJob_t* p_Job);
-uint32_t          PdqStratumGetDifficulty(void);
+double            PdqStratumGetDifficulty(void);
 void              PdqStratumGetExtranonce(uint8_t* p_Buffer, uint8_t* p_Len);
 uint8_t           PdqStratumGetExtranonce2Size(void);
 PdqError_t        PdqStratumBuildMiningJob(const PdqStratumJob_t* p_StratumJob,
                                            const uint8_t* p_Extranonce1, uint8_t Extranonce1Len,
                                            uint32_t Extranonce2, uint8_t Extranonce2Len,
-                                           uint32_t Difficulty,
+                                           double Difficulty,
                                            PdqMiningJob_t* p_MiningJob);
 
 #ifdef __cplusplus

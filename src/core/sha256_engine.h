@@ -23,6 +23,8 @@ PdqError_t PdqSha256Midstate(const uint8_t* p_BlockHeader, uint8_t* p_Midstate);
 PdqError_t PdqSha256MineBlock(const PdqMiningJob_t* p_Job, uint32_t* p_Nonce, bool* p_Found);
 PdqError_t PdqSha256MineBlockHw(const PdqMiningJob_t* p_Job, uint32_t* p_Nonce, bool* p_Found);
 void PdqSha256HwDiagnostic(void);
+bool PdqSha256HwCorrectnessTest(void);
+bool PdqSha256HwMiningLoopTest(void);
 
 #ifdef __cplusplus
 }

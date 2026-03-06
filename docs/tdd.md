@@ -1,7 +1,7 @@
 # PDQminer Test-Driven Development Guide
 
-> **Version**: 1.2.0
-> **Last Updated**: 2025-02-14
+> **Version**: 1.3.0
+> **Last Updated**: 2026-03-06
 > **Status**: Active
 > **Framework**: Unity Test Framework
 
@@ -691,8 +691,8 @@ void Benchmark_Sha256Double_Throughput(void)
 
 /* Minimum acceptable hashrates (fail build if not met) */
 #define MIN_SW_SINGLE_CORE_KHS  25.0f    /* SW single core minimum */
-#define MIN_HW_SINGLE_CORE_KHS  600.0f   /* HW single core minimum */
-#define MIN_COMBINED_KHS        650.0f   /* HW + SW combined minimum */
+#define MIN_HW_SINGLE_CORE_KHS  800.0f   /* HW single core minimum (NOP pipeline) */
+#define MIN_COMBINED_KHS        900.0f   /* HW + SW combined minimum */
 #define TARGET_COMBINED_KHS    1000.0f   /* Target performance */
 
 /**
@@ -2061,6 +2061,20 @@ The following optimizations have been verified correct:
 | HW SHA block0 half-fill | **VERIFIED** | 8 APB writes hidden behind double-hash START |
 | HW SHA 2-write reduced padding | **VERIFIED** | Only TextNV[8] and TextNV[15] differ per iteration |
 | GCC push_options/-O2 for HW | **VERIFIED** | HW path compiled with -O2, SW path with -Os |
+| NOP pipeline (BUSY removal) | **VERIFIED** | NOP-timed delays replace BUSY polling, 35% speedup |
+| NOP_13 calibration | **VERIFIED** | 13 NOPs after block1 fill, before CONTINUE |
+| NOP_57 calibration | **VERIFIED** | 55 NOPs between CONTINUE and LOAD |
+| NOP_9 calibration | **VERIFIED** | 9 NOPs between LOAD and double-hash START (NOP_8=FAIL) |
+| NOP_50 calibration | **VERIFIED** | 43 NOPs between double-hash START and final LOAD |
+| NOP_15 calibration | **VERIFIED** | 14 NOPs after final LOAD, before hash check |
+| NOP_8 calibration | **VERIFIED** | 1 NOP after START (next iter), before bound check |
+| Noinline cold path | **VERIFIED** | HwCheckHashCandidate isolated, hot loop 64-byte frame |
+| l16ui hash pre-filter | **VERIFIED** | 16-bit check rejects 99.998% in 1 cycle |
+| JsonEscapeString | **VERIFIED** | Escapes quotes, backslashes, strips control chars |
+| Extranonce2Size clamp | **VERIFIED** | Clamped to PDQ_STRATUM_MAX_EXTRANONCE_LEN (8) |
+| Coinbase length validation | **VERIFIED** | HexToBytes error → length 0, total bounds checked |
+| Recv buffer guard | **VERIFIED** | Buffer-full → discard with warning, prevents recv(0) |
+| Non-ESP32 stubs | **VERIFIED** | HwCorrectnessTest/HwMiningLoopTest return true |
 
 ### 13.6 Display Driver Verification
 
@@ -2094,8 +2108,8 @@ The following optimizations have been verified correct:
 | Metric | Expected | Measured |
 |--------|----------|---------|
 | HW cycles/nonce | <500 | 413 |
-| HW hashrate | >500 KH/s | 581 KH/s |
-| Combined HW+SW | >550 KH/s | 627 KH/s |
+| HW hashrate | >800 KH/s | 909 KH/s |
+| Combined HW+SW | >900 KH/s | 949 KH/s |
 | All diagnostic tests | PASS | PASS |
 
 **Round 10-11 - HW SHA Engine & Overlap Optimization:**
@@ -2109,7 +2123,55 @@ The following optimizations have been verified correct:
 | IRAM test | **REJECTED** | N/A | - (regressed: 538 vs 413 cyc/nonce) |
 | Commits | **VERIFIED** | 0 | - (23617e0, 7286523) |
 
-**Total Issues Resolved:** 24
+**Round 12 - Security Audit (NOP Pipeline Build):**
+
+| Component | Review Status | Issues Found | Issues Fixed |
+|-----------|---------------|--------------|--------------|
+| Stratum Client (coinbase overflow) | **CRITICAL** | 1 | 1 (HexToBytes -1 → uint16_t = 65535) |
+| Stratum Client (extranonce2 overflow) | **CRITICAL** | 1 | 1 (unclamped Extranonce2Size) |
+| Stratum Client (JSON injection) | **SECURITY** | 1 | 1 (added JsonEscapeString helper) |
+| Stratum Client (recv buffer full) | **SECURITY** | 1 | 1 (buffer-full guard added) |
+| Stratum Client (coinbase bounds) | **HARDENING** | 1 | 1 (total length validated) |
+| SHA256 Engine (non-ESP32 stubs) | **BUG** | 1 | 1 (HwCorrectnessTest/HwMiningLoopTest) |
+| Main (Worker buffer) | **BUG** | 1 | 1 (128 → 194 bytes) |
+| Build | **PASS** | 0 | - (RAM 16.5%, Flash 63.8%) |
+| HW Boot Test | **PASS** | 0 | - (HW vs SW MATCH, NOP vs SW MATCH) |
+| Mining Loop Test | **PASS** | 0 | - (nonce 0x9962E301, SW verified) |
+| Live Mining | **PASS** | 0 | - (949 KH/s confirmed) |
+
+**Total Issues Resolved:** 31
+
+### 13.8 NOP Pipeline Verification
+
+**Boot-time Tests (run every power-on):**
+
+| Test | Method | Result |
+|------|--------|--------|
+| HW vs SW correctness (busy-wait) | Compute SHA256d of known header via HW (BUSY polling) and SW, compare | MATCH |
+| NOP vs SW correctness | Compute SHA256d using NOP-timed pipeline, compare with SW | MATCH |
+| Mining loop test | Mine 51K nonces with NOP pipeline, verify found nonce via SW SHA256d | PASS (nonce 0x9962E301) |
+
+**NOP Binary Search Calibration:**
+
+| NOP Macro | Phase | Calibrated Count | Min Safe | Notes |
+|-----------|-------|-------------------|----------|-------|
+| NOP_13 | Block1 fill → CONTINUE | 13 | 13 | After removing Bswap from hot loop |
+| NOP_57 | CONTINUE → LOAD | 55 | 55 | Longest wait (block1 SHA computation) |
+| NOP_9 | LOAD → START (double-hash) | 9 | 9 | NOP_8 = FAIL |
+| NOP_50 | START → LOAD (final) | 43 | 43 | Double-hash completion wait |
+| NOP_15 | Final LOAD → hash check | 14 | 14 | Before l16ui reads result |
+| NOP_8 | START (next iter) → bound check | 1 | 1 | Minimal queue time |
+
+**Performance Verification (NOP Pipeline):**
+
+| Metric | Expected | Measured |
+|--------|----------|---------|
+| HW cycles/nonce | <300 | ~264 |
+| HW hashrate | >800 KH/s | 909 KH/s |
+| Combined HW+SW | >900 KH/s | 949 KH/s |
+| Boot test | PASS | PASS |
+| Mining loop test | PASS | PASS (verified via SW) |
+| Stack frame | ≤96 bytes | 64 bytes (1 spill) |
 
 ---
 
