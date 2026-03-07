@@ -375,9 +375,14 @@ PDQ_IRAM_ATTR __attribute__((noinline)) static bool PdqSha256dBaked(const uint32
     uint32_t temp1, temp2;
 
     /* === First hash: SHA256 of block tail with midstate === */
-    uint32_t W[64] = { p_Bake[0], p_Bake[1], p_Bake[2], ReadBe32(p_BlockTail + 12),
-                       0x80000000, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                       0, 640 };
+    uint32_t W[64];
+    W[0] = p_Bake[0]; W[1] = p_Bake[1]; W[2] = p_Bake[2];
+    W[3] = ReadBe32(p_BlockTail + 12);
+    W[4] = 0x80000000;
+    W[5] = 0; W[6] = 0; W[7] = 0; W[8] = 0;
+    W[9] = 0; W[10] = 0; W[11] = 0; W[12] = 0;
+    W[13] = 0; W[14] = 0;
+    W[15] = 640;
     W[16] = p_Bake[3];
     W[17] = p_Bake[4];
 
@@ -809,7 +814,7 @@ static __attribute__((noinline)) bool HwCheckHashCandidate(
  * Will be re-tuned by NOP binary search. */
 #define NOP_13 __asm__ volatile( \
     "nop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\n" \
-    "nop.n\nnop.n\nnop.n" \
+    "nop.n\nnop.n" \
     ::: "memory")
 
 /* Phase 4: between LOAD and START (double-hash).
@@ -822,7 +827,7 @@ static __attribute__((noinline)) bool HwCheckHashCandidate(
  * Original value: 15 NOPs. */
 #define NOP_15 __asm__ volatile( \
     "nop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\n" \
-    "nop.n\nnop.n\nnop.n\nnop.n" \
+    "nop.n\nnop.n\nnop.n" \
     ::: "memory")
 
 /* Phase 8: after START (block0 next iter), before bound check/nonce++.
@@ -839,7 +844,7 @@ static __attribute__((noinline)) bool HwCheckHashCandidate(
     "nop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\n" \
     "nop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\n" \
     "nop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\n" \
-    "nop.n\nnop.n\nnop.n\nnop.n\nnop.n" \
+    "nop.n\nnop.n\nnop.n\nnop.n" \
     ::: "memory")
 
 /* Phase 5: between START (double-hash) and LOAD (final result).
@@ -849,7 +854,7 @@ static __attribute__((noinline)) bool HwCheckHashCandidate(
     "nop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\n" \
     "nop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\n" \
     "nop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\nnop.n\n" \
-    "nop.n\nnop.n\nnop.n" \
+    "nop.n\nnop.n" \
     ::: "memory")
 
 /* ============================================================================

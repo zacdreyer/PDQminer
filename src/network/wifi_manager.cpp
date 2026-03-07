@@ -65,9 +65,14 @@ h3{margin-top:0}
 </div>
 <div class="section">
 <h3>Primary Pool</h3>
-<label>Host</label><input type="text" name="pool1_host" value="public-pool.io" maxlength="63">
+<label>Host</label><input type="text" name="pool1_host" value="pool.nerdminers.org" maxlength="63">
 <label>Port</label><input type="number" name="pool1_port" value="3333" min="1" max="65535">
 <label>Pool Password</label><input type="text" name="pool1_pass" value="x" maxlength="64">
+</div>
+<div class="section">
+<h3>Backup Pool</h3>
+<label>Host</label><input type="text" name="pool2_host" value="public-pool.io" maxlength="63">
+<label>Port</label><input type="number" name="pool2_port" value="3333" min="1" max="65535">
 </div>
 <div class="section">
 <h3>Wallet</h3>
@@ -156,6 +161,13 @@ static void HandleSave(void)
     if (s_pServer->hasArg("pool1_pass")) {
         strncpy(Config.PrimaryPool.Password, s_pServer->arg("pool1_pass").c_str(), PDQ_MAX_PASSWORD_LEN);
         Config.PrimaryPool.Password[PDQ_MAX_PASSWORD_LEN] = '\0';
+    }
+    if (s_pServer->hasArg("pool2_host")) {
+        strncpy(Config.BackupPool.Host, s_pServer->arg("pool2_host").c_str(), PDQ_MAX_HOST_LEN);
+        Config.BackupPool.Host[PDQ_MAX_HOST_LEN] = '\0';
+    }
+    if (s_pServer->hasArg("pool2_port")) {
+        Config.BackupPool.Port = (uint16_t)s_pServer->arg("pool2_port").toInt();
     }
     if (s_pServer->hasArg("wallet")) {
         strncpy(Config.WalletAddress, s_pServer->arg("wallet").c_str(), PDQ_MAX_WALLET_LEN);

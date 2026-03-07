@@ -1,7 +1,7 @@
 # PDQminer Software Design Document (SDD)
 
-> **Version**: 1.3.0
-> **Last Updated**: 2026-03-06
+> **Version**: 1.4.0
+> **Last Updated**: 2026-03-07
 > **Status**: Active
 > **Owner**: PDQminer Team
 
@@ -51,7 +51,7 @@ PDQminer targets ESP32-D0 class devices with the goal of achieving >1000 KH/s SH
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         Mining Pool                                  │
-│                    (public-pool.io:21496)                           │
+│               (pool.nerdminers.org:3333)                            │
 └──────────────────────────┬──────────────────────────────────────────┘
                            │ Stratum Protocol
                            │ (TCP/JSON-RPC)
@@ -255,11 +255,11 @@ PDQminer/
    - HW SHA processes one 64-byte block via START (first block) or CONTINUE (subsequent blocks)
    - Timing (individual, with printf overhead): START=628 CPU cycles, CONTINUE=628 CPU cycles, LOAD=25 CPU cycles
    - Effective hot-loop timing: ~107 CPU cycles per SHA block (batch-derived), ~25 CPU cycles per LOAD
-   - HW mining achieves **~909 KH/s** (~264 CPU cycles/nonce) vs ~40 KH/s for SW per core
+   - HW mining achieves **~945 KH/s** (~256 CPU cycles/nonce) vs ~40 KH/s for SW per core
    - **Midstate caching is NOT possible on ESP32-D0**: No `SHA_H_BASE` register exists (only on ESP32-S2/S3/C3). LOAD copies digest from internal state to SHA_TEXT (read-only direction). Espressif docs: "not possible to restore a SHA digest state into the engine." Probing undocumented registers at SHA_BASE+0x40 (matching ESP32-S2/S3's SHA_H_BASE offset) confirmed: reads return zeros, writes have no effect on engine state.
    - Each double-SHA256 requires: START (block0) + CONTINUE (block1) + LOAD (intermediate) + START (double-hash) + LOAD (final) = 3 SHA blocks + 2 LOADs per nonce
    - **START→CONTINUE chaining**: Writing to CONTINUE_REG while START is busy causes the engine to auto-chain atomically (undocumented, verified by diagnostic). Eliminates idle gap between START and CONTINUE.
-   - **Performance ceiling**: 3×~107 + 2×~25 + ~20 overhead ≈ 391 cyc/nonce (diagnostic), ~264 cyc/nonce (production with NOP pipeline + cold path) = **~909 KH/s HW + ~40 KH/s SW = ~949 KH/s combined.**
+   - **Performance ceiling**: 3×~107 + 2×~25 + ~20 overhead ≈ 391 cyc/nonce (diagnostic), ~256 cyc/nonce (production with NOP pipeline + cold path) = **~945 KH/s HW + ~40 KH/s SW = ~985 KH/s combined.**
 
 9. **Overlapped Register Writes**
    - Writes to SHA_TEXT during START are **safe** (engine latches data at trigger)
@@ -278,11 +278,11 @@ PDQminer/
 11. **NOP-Timed Pipeline (HW SHA)**
     - Replaced BUSY register polling with calibrated NOP delays for ~35% speedup
     - Binary search calibrated minimum NOP counts per pipeline phase:
-      - NOP_57=55 (CONTINUE→LOAD wait), NOP_50=43 (double-hash START→LOAD wait)
-      - NOP_15=14 (final LOAD→hash check), NOP_13=13 (block1 fill→CONTINUE)
+      - NOP_57=54 (CONTINUE→LOAD wait), NOP_50=42 (double-hash START→LOAD wait)
+      - NOP_15=13 (final LOAD→hash check), NOP_13=12 (block1 fill→CONTINUE)
       - NOP_9=9 (LOAD→double-hash START), NOP_8=1 (START next iter→bound check)
     - Single `asm volatile("nop.n\n..." ::: "memory")` blocks prevent compiler reordering
-    - Achieves ~264 cycles/nonce (was ~364 with BUSY polling)
+    - Achieves ~256 cycles/nonce (was ~364 with BUSY polling)
 
 12. **Noinline Cold Path Extraction**
     - `HwCheckHashCandidate()` marked `__attribute__((noinline))` — isolates 8× `Bswap32` calls

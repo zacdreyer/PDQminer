@@ -1,7 +1,7 @@
 # PDQminer Test-Driven Development Guide
 
-> **Version**: 1.3.0
-> **Last Updated**: 2026-03-06
+> **Version**: 1.4.0
+> **Last Updated**: 2026-03-07
 > **Status**: Active
 > **Framework**: Unity Test Framework
 
