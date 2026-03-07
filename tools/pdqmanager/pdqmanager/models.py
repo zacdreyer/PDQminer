@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class DeviceStatus(BaseModel):
@@ -20,7 +20,7 @@ class DeviceStatus(BaseModel):
     shares_rejected: int = 0
     pool_connected: bool = False
     free_heap: int = 0
-    last_seen: datetime = datetime.now()
+    last_seen: datetime = Field(default_factory=datetime.now)
     authenticated: bool = False
 
 
@@ -35,10 +35,10 @@ class DeviceConfig(BaseModel):
     wallet: str = ""
     worker: str = ""
 
-    @field_validator("pool1_port")
+    @field_validator("pool1_port", "pool2_port")
     @classmethod
-    def validate_port(cls, v: int) -> int:
-        if not 1 <= v <= 65535:
+    def validate_port(cls, v: int | None) -> int | None:
+        if v is not None and not 1 <= v <= 65535:
             raise ValueError("Port must be 1-65535")
         return v
 

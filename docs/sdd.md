@@ -1,7 +1,7 @@
 # PDQminer Software Design Document (SDD)
 
-> **Version**: 1.4.0
-> **Last Updated**: 2026-03-07
+> **Version**: 1.5.0
+> **Last Updated**: 2025-07-17
 > **Status**: Active
 > **Owner**: PDQminer Team
 
@@ -1624,237 +1624,120 @@ Architecture supports:
 
 ---
 
-## 10. Firmware Patcher Tools
+## 10. PDQFlasher — Firmware Flashing Tool
 
-PDQminer includes cross-platform tools for flashing firmware to ESP32 devices, making it accessible to users without development environments.
+PDQFlasher is a cross-platform CLI tool for flashing firmware to PDQminer ESP32 devices. It wraps esptool with auto-detection, board-specific configuration, and verification.
+
+> **Status**: Implemented (v1.0.0) — 37 tests passing
 
 ### 10.1 Overview
 
-| Tool | Platform | Use Case |
-|------|----------|----------|
-| Web Flasher | Browser (Chrome/Edge) | Quick one-click flashing via WebSerial |
-| Python Flasher | Windows/macOS/Linux | CLI flashing, scripting, CI/CD |
+| Tool | Platform | Use Case | Status |
+|------|----------|----------|--------|
+| PDQFlasher CLI | Windows/macOS/Linux | CLI flashing, scripting, CI/CD | ✅ Implemented |
+| Web Flasher | Browser (Chrome/Edge) | Quick one-click flashing via WebSerial | Planned |
 
-### 10.2 Web Flasher (`tools/web-flasher/`)
-
-Browser-based flashing using [ESP Web Tools](https://esphome.github.io/esp-web-tools/).
-
-#### 10.2.1 Architecture
+### 10.2 Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      Web Browser                             │
+│                    pdqflash CLI (Click)                      │
 │  ┌───────────────┐  ┌───────────────┐  ┌────────────────┐  │
-│  │  index.html   │──│  flasher.js   │──│ WebSerial API  │  │
+│  │  cli.py       │──│  flasher.py   │──│  esptool       │  │
+│  │  (Click)      │  │  (logic)      │  │  (low-level)   │  │
 │  └───────────────┘  └───────────────┘  └───────┬────────┘  │
-└───────────────────────────────────────────────────┼─────────┘
-                                                    │ USB
-┌───────────────────────────────────────────────────▼─────────┐
-│                    ESP32 Device                              │
-│                    (Bootloader Mode)                         │
-└─────────────────────────────────────────────────────────────┘
+│  ┌───────────────┐  ┌───────────────┐          │           │
+│  │  detector.py  │──│  config.py    │          │           │
+│  │  (auto-detect)│  │  (boards)     │          │           │
+│  └───────────────┘  └───────────────┘          │           │
+└────────────────────────────────────────────────┼───────────┘
+                                                 │ Serial/USB
+┌────────────────────────────────────────────────▼───────────┐
+│                    ESP32 Device                             │
+└────────────────────────────────────────────────────────────┘
 ```
 
-#### 10.2.2 Features
+### 10.3 Module Design
 
-- **One-click install**: No software installation required
-- **Board selection**: Dropdown for supported boards (ILI9341/ST7789)
-- **Progress feedback**: Real-time flash progress
-- **Error handling**: Clear error messages for common issues
-- **Hosted on GitHub Pages**: `https://pdqminer.github.io/flash`
+#### 10.3.1 `config.py` — Board Configuration
 
-#### 10.2.3 Manifest Structure
-
-```json
-{
-  "name": "PDQminer",
-  "version": "1.0.0",
-  "builds": [
-    {
-      "chipFamily": "ESP32",
-      "parts": [
-        { "path": "pdqminer_cyd_ili9341.bin", "offset": 0 }
-      ]
-    }
-  ]
-}
-```
-
-#### 10.2.4 File Structure
-
-```
-tools/web-flasher/
-├── index.html              # Main page with ESP Web Tools
-├── manifest.json           # Firmware manifest
-├── css/
-│   └── style.css           # PDQminer branding
-├── js/
-│   └── flasher.js          # Board selection logic
-└── firmware/               # Binary files (populated by CI)
-    ├── pdqminer_cyd_ili9341.bin
-    └── pdqminer_cyd_st7789.bin
-```
-
-### 10.3 Python Flasher (`tools/python-flasher/`)
-
-Cross-platform CLI tool built on `esptool.py`.
-
-#### 10.3.1 Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    pdqflash CLI                              │
-│  ┌───────────────┐  ┌───────────────┐  ┌────────────────┐  │
-│  │  pdqflash.py  │──│  flasher.py   │──│  esptool.py    │  │
-│  │  (argparse)   │  │  (logic)      │  │  (low-level)   │  │
-│  └───────────────┘  └───────────────┘  └───────┬────────┘  │
-└───────────────────────────────────────────────────┼─────────┘
-                                                    │ Serial
-┌───────────────────────────────────────────────────▼─────────┐
-│                    ESP32 Device                              │
-└─────────────────────────────────────────────────────────────┘
-```
-
-#### 10.3.2 Features
-
-- **Auto-detect board**: Identify connected ESP32 variant
-- **Auto-detect port**: Find serial port automatically
-- **Multiple boards**: Flash configuration per board type
-- **Verify after flash**: Optional checksum verification
-- **Erase option**: Full flash erase before writing
-- **Progress bar**: Visual feedback during flash
-
-#### 10.3.3 CLI Interface
-
-```bash
-# Basic usage - auto-detect board and port
-pdqflash flash
-
-# Specify board explicitly
-pdqflash flash --board cyd_ili9341
-
-# Specify port
-pdqflash flash --port /dev/ttyUSB0
-
-# Flash specific binary
-pdqflash flash --binary ./custom_firmware.bin
-
-# List detected boards
-pdqflash detect
-
-# Erase flash completely
-pdqflash erase --port /dev/ttyUSB0
-
-# Show version info
-pdqflash --version
-```
-
-#### 10.3.4 File Structure
-
-```
-tools/python-flasher/
-├── pdqflash.py             # CLI entry point
-├── requirements.txt        # Dependencies
-├── setup.py                # Package setup (pip install)
-├── pdqflash/               # Package module
-│   ├── __init__.py
-│   ├── flasher.py          # Flash operations
-│   ├── detector.py         # Board/port detection
-│   └── config.py           # Board configurations
-└── tests/
-    ├── test_flasher.py
-    └── test_detector.py
-```
-
-#### 10.3.5 Dependencies
-
-```
-# requirements.txt
-esptool>=4.0
-pyserial>=3.5
-click>=8.0        # CLI framework
-rich>=13.0        # Progress bars and formatting
-```
-
-#### 10.3.6 Board Configuration
+Defines frozen `BoardConfig` dataclasses and known ESP32 USB VID/PID pairs:
 
 ```python
-# pdqflash/config.py
-BOARD_CONFIGS = {
-    "cyd_ili9341": {
-        "chip": "esp32",
-        "flash_size": "4MB",
-        "flash_mode": "dio",
-        "flash_freq": "40m",
-        "firmware": "pdqminer_cyd_ili9341.bin",
-        "partitions": "default_4MB.csv"
-    },
-    "cyd_st7789": {
-        "chip": "esp32",
-        "flash_size": "4MB",
-        "flash_mode": "dio",
-        "flash_freq": "40m",
-        "firmware": "pdqminer_cyd_st7789.bin",
-        "partitions": "default_4MB.csv"
-    }
-}
+@dataclass(frozen=True)
+class BoardConfig:
+    chip: str           # "esp32"
+    flash_size: str     # "4MB"
+    flash_mode: str     # "dio"
+    flash_freq: str     # "40m"
+    firmware: str       # "firmware_cyd_ili9341.bin"
+
+ESP32_USB_DEVICES = [
+    (0x10C4, 0xEA60),  # Silicon Labs CP210x
+    (0x1A86, 0x7523),  # WCH CH340/CH341
+    (0x0403, 0x6001),  # FTDI FT232R
+    (0x303A, 0x1001),  # Espressif ESP32-S3 USB
+]
 ```
 
-### 10.4 CI/CD Integration
+#### 10.3.2 `detector.py` — Auto-Detection
 
-GitHub Actions workflow for building and publishing flasher tools:
+- `detect_port()`: Scans serial ports matching known VID/PID pairs
+- `detect_board()`: Uses `esptool.cmds.detect_chip()` to identify the ESP32 variant and read MAC address
+- Returns `BoardInfo(chip, mac, port)` dataclass
 
-```yaml
-# .github/workflows/release.yml
-name: Build and Release
+#### 10.3.3 `flasher.py` — Flash Operations
 
-on:
-  release:
-    types: [published]
+- `flash_firmware()`: Builds esptool args from board config and executes flash. Handles `SystemExit(0)` as success (esptool convention)
+- `verify_firmware()`: Uses esptool's `verify_flash` command to read back flash and compare byte-by-byte against the binary file
+- `erase_flash()`: Full flash erase via esptool
 
-jobs:
-  build-firmware:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build Firmware
-        run: |
-          cd firmware
-          pio run -e cyd_ili9341
-          pio run -e cyd_st7789
-      - name: Copy to web-flasher
-        run: |
-          cp firmware/.pio/build/cyd_ili9341/firmware.bin \
-             tools/web-flasher/firmware/pdqminer_cyd_ili9341.bin
-          cp firmware/.pio/build/cyd_st7789/firmware.bin \
-             tools/web-flasher/firmware/pdqminer_cyd_st7789.bin
+#### 10.3.4 `cli.py` — Click CLI
 
-  deploy-web-flasher:
-    needs: build-firmware
-    runs-on: ubuntu-latest
-    steps:
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./tools/web-flasher
+Three commands: `flash`, `detect`, `erase`. All support `--port` with auto-detection fallback.
 
-  publish-python-flasher:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Publish to PyPI
-        run: |
-          cd tools/python-flasher
-          pip install build twine
-          python -m build
-          twine upload dist/*
+### 10.4 File Structure
+
 ```
+tools/pdqflasher/
+├── pyproject.toml          # Build config, dependencies, tool settings
+├── requirements.txt        # Flat dependency list
+├── README.md               # User guide
+├── pdqflasher/
+│   ├── __init__.py         # __version__ = "1.0.0"
+│   ├── __main__.py         # python -m pdqflasher entry point
+│   ├── config.py           # BoardConfig, BOARD_CONFIGS, ESP32_USB_DEVICES
+│   ├── detector.py         # detect_port(), detect_board(), get_chip_info()
+│   ├── flasher.py          # flash_firmware(), verify_firmware(), erase_flash()
+│   └── cli.py              # Click CLI group (flash, detect, erase)
+└── tests/
+    ├── conftest.py         # firmware_bin fixture
+    ├── test_config.py      # 10 tests — board configs
+    ├── test_detector.py    # 9 tests — port/board detection
+    ├── test_flasher.py     # 12 tests — flash/verify/erase
+    └── test_cli.py         # 6 tests — CLI interface
+```
+
+### 10.5 Dependencies
+
+| Package  | Version | Purpose                    |
+|----------|---------|----------------------------|
+| esptool  | ≥ 4.0   | ESP32 flash operations     |
+| pyserial | ≥ 3.5   | Serial port enumeration    |
+| click    | ≥ 8.0   | CLI framework              |
+| rich     | ≥ 13.0  | Terminal output formatting |
+
+### 10.6 Web Flasher (Planned)
+
+Browser-based flashing using [ESP Web Tools](https://esphome.github.io/esp-web-tools/) is planned for a future release. This will allow one-click flashing via WebSerial API without any software installation.
 
 ---
 
 ## 11. PDQManager - Fleet Management Application
 
 PDQManager is a **platform-independent Python application** that runs on a PC to monitor and configure multiple PDQminer devices on a network. By running the management UI on the PC rather than the miners, hashrate is preserved.
+
+> **Status**: Implemented (v1.0.0) — 28 tests passing
 
 ### 11.1 Architecture Overview
 
@@ -1908,35 +1791,36 @@ PDQManager is a **platform-independent Python application** that runs on a PC to
 - **Alerts**: Offline detection, low hashrate warnings
 - **Export**: CSV/JSON data export for analysis
 
-#### 11.3.2 File Structure
+#### 11.3.2 File Structure (Actual Implementation)
 
 ```
 tools/pdqmanager/
-├── pdqmanager.py           # Entry point - launches web server
-├── requirements.txt
-├── setup.py                # pip installable
+├── pyproject.toml          # Build config, deps, tool settings
+├── requirements.txt        # Flat dependency list
+├── README.md               # User guide
 ├── pdqmanager/
-│   ├── __init__.py
-│   ├── app.py              # Flask application
-│   ├── discovery.py        # mDNS/UDP device scanner
-│   ├── device.py           # Device communication client
-│   ├── models.py           # Data models
-│   ├── api/
-│   │   ├── __init__.py
-│   │   ├── devices.py      # /api/devices endpoints
-│   │   ├── config.py       # /api/config endpoints
-│   │   └── stats.py        # /api/stats endpoints
-│   ├── static/
-│   │   ├── css/
-│   │   └── js/
-│   └── templates/
-│       ├── index.html      # Dashboard
-│       ├── device.html     # Single device view
-│       └── settings.html   # App settings
+│   ├── __init__.py         # __version__ = "1.0.0"
+│   ├── __main__.py         # python -m pdqmanager entry point
+│   ├── models.py           # Pydantic models (DeviceStatus, DeviceConfig, FleetStats)
+│   ├── discovery.py        # mDNS ServiceListener (zeroconf)
+│   ├── device.py           # DeviceClient HTTP client (requests)
+│   ├── manager.py          # DeviceManager (coordinates discovery + polling)
+│   ├── api.py              # Flask Blueprint — /api/* REST endpoints
+│   ├── app.py              # Flask application factory + page routes
+│   ├── cli.py              # Click CLI (web server, scan, export)
+│   ├── templates/
+│   │   ├── base.html       # Navigation layout
+│   │   ├── index.html      # Fleet dashboard (stats grid + device cards)
+│   │   ├── device.html     # Device detail (auth + config editing)
+│   │   └── settings.html   # App settings
+│   └── static/
+│       ├── css/style.css   # Dark theme (Bitcoin-orange accent)
+│       └── js/app.js       # Client-side logic (refresh, render, escapeHtml)
 └── tests/
-    ├── test_discovery.py
-    ├── test_device.py
-    └── test_api.py
+    ├── conftest.py         # device_manager, app, client fixtures
+    ├── test_discovery.py   # 6 tests — mDNS discovery
+    ├── test_device.py      # 10 tests — HTTP client
+    └── test_api.py         # 12 tests — REST API endpoints
 ```
 
 #### 11.3.3 Dependencies

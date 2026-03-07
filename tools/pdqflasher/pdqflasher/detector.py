@@ -68,7 +68,10 @@ def detect_board(port: str) -> BoardInfo:
             mac_str = ":".join(f"{b:02X}" for b in mac_bytes)
             return BoardInfo(chip=chip_name, mac=mac_str, port=port)
         finally:
-            esp._port.close()
+            try:
+                esp._port.close()
+            except Exception:
+                pass
     except Exception as e:
         raise ConnectionError(f"Failed to detect board on {port}: {e}") from e
 

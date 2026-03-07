@@ -112,22 +112,45 @@ class TestVerifyFirmware:
     """Tests for firmware verification."""
 
     @patch("pdqflasher.flasher.esptool")
-    def test_verify_firmware_success(self, mock_esptool: object) -> None:
+    def test_verify_firmware_success(self, mock_esptool: object, tmp_path: Path) -> None:
         """Verification passing returns True."""
+        firmware = tmp_path / "test.bin"
+        firmware.write_bytes(b"\x00" * 1024)
         mock_esptool.main.return_value = None
 
-        result = verify_firmware("/dev/ttyUSB0", expected_checksum="abc123")
+        result = verify_firmware("/dev/ttyUSB0", firmware_path=str(firmware))
 
         assert result is True
+        call_args = mock_esptool.main.call_args[0][0]
+        assert "verify_flash" in call_args
+        assert str(firmware) in call_args
 
     @patch("pdqflasher.flasher.esptool")
-    def test_verify_firmware_failure(self, mock_esptool: object) -> None:
+    def test_verify_firmware_failure(self, mock_esptool: object, tmp_path: Path) -> None:
         """Verification failing returns False."""
-        mock_esptool.main.side_effect = Exception("Checksum mismatch")
+        firmware = tmp_path / "test.bin"
+        firmware.write_bytes(b"\x00" * 1024)
+        mock_esptool.main.side_effect = Exception("Verification mismatch")
 
-        result = verify_firmware("/dev/ttyUSB0", expected_checksum="abc123")
+        result = verify_firmware("/dev/ttyUSB0", firmware_path=str(firmware))
 
         assert result is False
+
+    def test_verify_firmware_missing_file_raises(self) -> None:
+        """Verification with missing firmware file raises FileNotFoundError."""
+        with pytest.raises(FileNotFoundError):
+            verify_firmware("/dev/ttyUSB0", firmware_path="/nonexistent/file.bin")
+
+    @patch("pdqflasher.flasher.esptool")
+    def test_verify_firmware_exit_zero_succeeds(self, mock_esptool: object, tmp_path: Path) -> None:
+        """esptool exiting with code 0 is treated as success."""
+        firmware = tmp_path / "test.bin"
+        firmware.write_bytes(b"\x00" * 1024)
+        mock_esptool.main.side_effect = SystemExit(0)
+
+        result = verify_firmware("/dev/ttyUSB0", firmware_path=str(firmware))
+
+        assert result is True
 
 
 class TestEraseFlash:

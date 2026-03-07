@@ -226,18 +226,41 @@ pio test -e native
 
 ```bash
 cd tools/pdqflasher
-pip install -e ".[gui]"
-pdqflasher --gui  # Launch GUI
-pdqflasher --port /dev/ttyUSB0  # CLI mode
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+
+# Flash connected device
+pdqflash flash --binary build/pdqminer.bin
+
+# Detect connected board
+pdqflash detect
+
+# See all options
+pdqflash flash --help
 ```
+
+See [PDQFlasher User Guide](tools/pdqflasher/README.md) for full documentation.
 
 ### Build PDQManager
 
 ```bash
 cd tools/pdqmanager
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e .
-pdqmanager  # Starts web server at http://localhost:5000
+
+# Start web dashboard (opens browser automatically)
+pdqmanager
+
+# Quick scan without web server
+pdqmanager scan
+
+# Export fleet data
+pdqmanager export --format json --output fleet.json
 ```
+
+See [PDQManager User Guide](tools/pdqmanager/README.md) for full documentation.
 
 ---
 
@@ -247,9 +270,9 @@ pdqmanager  # Starts web server at http://localhost:5000
 
 | Component | Core | Hashrate | Cycles/Nonce |
 |-----------|------|----------|-------------|
-| HW SHA256 Engine | Core 0 | 909 KH/s | ~264 |
-| SW SHA256 Engine | Core 1 | 40 KH/s | — |
-| **Combined** | **Both** | **949 KH/s** | — |
+| HW SHA256 Engine | Core 0 | ~945 KH/s | ~264 |
+| SW SHA256 Engine | Core 1 | ~40 KH/s | — |
+| **Combined** | **Both** | **~985 KH/s** | — |
 
 > **Hardware**: ESP32-D0WD-V3 (rev3.1), Dual-Core Xtensa LX6 @ 240 MHz
 
@@ -262,6 +285,7 @@ pdqmanager  # Starts web server at http://localhost:5000
 | Overlap optimization | 627 KH/s | Register writes overlapped with SHA computation |
 | START→CONTINUE chaining | ~700 KH/s | Zero-gap atomic operation chaining |
 | NOP pipeline + cold path | **949 KH/s** | NOP-timed pipeline, noinline cold path, register caching |
+| NOP fine-tuning | **~985 KH/s** | Binary search NOP calibration (54/42/12/13/9/1 = 130 NOPs) |
 
 ### Hardware SHA256 Findings (ESP32-D0)
 
@@ -339,19 +363,23 @@ pdqmanager  # Starts web server at http://localhost:5000
 - [x] START→CONTINUE operation chaining (~700 KH/s)
 - [x] NOP-timed pipeline optimization (949 KH/s)
 - [x] Noinline cold path extraction (register pressure optimization)
-- [x] NOP binary search calibration (NOP_57=55, NOP_50=43, NOP_15=14, NOP_13=13, NOP_9=9, NOP_8=1)
+- [x] NOP binary search calibration (NOP_57=54, NOP_50=42, NOP_15=12, NOP_13=13, NOP_9=9, NOP_8=1)
 - [x] Boot-time HW correctness test + mining loop verification test
 - [x] First pool-accepted share on public-pool.io
 - [x] Security review (6 bugs + 2 security issues fixed)
+- [x] Pool configuration update (pool.nerdminers.org primary, public-pool.io backup)
 - [ ] Xtensa inline assembly exploration (target ≥1000 KH/s)
 
-### Phase 4: Tools
+### Phase 4: Tools (Complete)
 
-- [ ] PDQFlasher CLI implementation
-- [ ] PDQFlasher GUI implementation
-- [ ] PDQManager backend (Flask)
-- [ ] PDQManager frontend (web UI)
-- [ ] mDNS discovery implementation
+- [x] PDQFlasher CLI implementation (37 tests passing)
+- [x] PDQFlasher auto-detection (port, board, chip)
+- [x] PDQManager backend (Flask + REST API)
+- [x] PDQManager frontend (web UI dashboard)
+- [x] mDNS discovery implementation
+- [x] PDQManager device authentication + config management
+- [x] Code review + 7 bug fixes (verify_firmware, XSS, thread safety, CSV)
+- [x] Comprehensive user guide documentation
 
 ### Phase 5: Release
 

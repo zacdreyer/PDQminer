@@ -1,7 +1,7 @@
 # PDQminer Test-Driven Development Guide
 
-> **Version**: 1.4.0
-> **Last Updated**: 2026-03-07
+> **Version**: 1.5.0
+> **Last Updated**: 2025-07-17
 > **Status**: Active
 > **Framework**: Unity Test Framework
 
@@ -1124,23 +1124,25 @@ void Test_Example_WithDebugOutput(void)
 
 ---
 
-## 9. Firmware Patcher Tool Tests
+## 9. PDQFlasher Tool Tests
 
-The firmware patcher tools (Python CLI and Web flasher) require their own test suites.
+PDQFlasher tests use pytest with mocked esptool/serial-port calls. All tests run without hardware.
 
-### 9.1 Python Flasher Tests (`tools/python-flasher/tests/`)
+> **Status**: 37 tests passing (v1.0.0)
+
+### 9.1 PDQFlasher Tests (`tools/pdqflasher/tests/`)
 
 #### 9.1.1 Test Organization
 
 ```
-tools/python-flasher/
+tools/pdqflasher/
 ├── tests/
-│   ├── conftest.py           # pytest fixtures
-│   ├── test_flasher.py       # Flash operation tests
-│   ├── test_detector.py      # Board detection tests
-│   ├── test_config.py        # Configuration tests
-│   └── test_cli.py           # CLI interface tests
-└── pytest.ini                # pytest configuration
+│   ├── conftest.py           # firmware_bin fixture (tmp_path)
+│   ├── test_config.py        # 10 tests — BoardConfig, BOARD_CONFIGS
+│   ├── test_detector.py      # 9 tests — detect_port, detect_board, get_chip_info
+│   ├── test_flasher.py       # 12 tests — flash_firmware, verify_firmware, erase_flash
+│   └── test_cli.py           # 6 tests — Click CLI interface
+└── pyproject.toml            # pytest configuration
 ```
 
 #### 9.1.2 Test Examples
@@ -1742,6 +1744,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size)
 
 ## 11. PDQManager Tests
 
+> **Status**: 28 tests passing (v1.0.0)
+
 ### 11.1 Device API Unit Tests (Firmware)
 
 ```c
@@ -1891,6 +1895,23 @@ def test_get_stats_aggregates():
             response = client.get("/api/stats")
             assert response.json["total_hashrate_khs"] == 1020
 ```
+
+### 11.4 PDQManager Test Summary (Actual Implementation)
+
+```
+tools/pdqmanager/tests/
+├── conftest.py           # device_manager, app, client fixtures
+├── test_discovery.py     # 6 tests — PDQMinerDiscovery (add/remove/update service)
+├── test_device.py        # 10 tests — DeviceClient HTTP (status, auth, config, restart)
+└── test_api.py           # 12 tests — REST API (devices, auth, stats, scan, config, restart)
+```
+
+| Test File          | Test Count | Key Coverage                                   |
+|--------------------|-----------|-------------------------------------------------|
+| test_discovery.py  | 6         | Service type, add/remove/update, no-info edge   |
+| test_device.py     | 10        | GET status/info, auth success/fail, config, restart, URL building |
+| test_api.py        | 12        | All /api/* endpoints, error cases (404, 400, 500) |
+| **Total**          | **28**    | **100% module coverage**                         |
 
 ---
 

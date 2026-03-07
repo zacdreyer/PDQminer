@@ -45,8 +45,9 @@ class DeviceManager:
                 logger.info(
                     "Added device %s @ %s:%d", device.device_id, device.ip_address, device.port
                 )
-                # Fetch initial status
-                self._poll_device(device.device_id, client)
+        # Fetch initial status outside the lock (does network I/O + acquires lock internally)
+        if device.device_id in self._clients:
+            self._poll_device(device.device_id, self._clients[device.device_id])
 
     def add_device_manual(self, ip_address: str, port: int = 80) -> str | None:
         """Manually add a device by IP address.
@@ -72,12 +73,13 @@ class DeviceManager:
             data = client.get_status()
             data["ip_address"] = client.ip_address
             data["authenticated"] = client.token is not None
-            self._status_cache[device_id] = data
+            with self._lock:
+                self._status_cache[device_id] = data
         except Exception as e:
             logger.warning("Failed to poll %s: %s", device_id, e)
-            # Mark as offline but keep in cache
-            if device_id in self._status_cache:
-                self._status_cache[device_id]["pool_connected"] = False
+            with self._lock:
+                if device_id in self._status_cache:
+                    self._status_cache[device_id]["pool_connected"] = False
 
     def refresh_all(self) -> None:
         """Poll all known devices for current status."""

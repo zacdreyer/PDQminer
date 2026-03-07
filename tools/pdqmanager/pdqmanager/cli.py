@@ -97,14 +97,19 @@ def export(fmt: str, output: str | None) -> None:
     if fmt == "json":
         content = json.dumps(all_status, indent=2, default=str)
     else:
-        # CSV format
+        # CSV format — use csv module for proper quoting/escaping
+        import csv
+        import io
+
         if not all_status:
             return
         headers = list(all_status[0].keys())
-        lines = [",".join(headers)]
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(headers)
         for device in all_status:
-            lines.append(",".join(str(device.get(h, "")) for h in headers))
-        content = "\n".join(lines)
+            writer.writerow([str(device.get(h, "")) for h in headers])
+        content = buf.getvalue()
 
     if output:
         with open(output, "w") as f:

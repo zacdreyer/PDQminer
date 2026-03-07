@@ -67,7 +67,7 @@
 
 {% block scripts %}
 <script>
-const DEVICE_ID = "{{ device_id }}";
+const DEVICE_ID = {{ device_id|tojson }};
 
 document.addEventListener('DOMContentLoaded', () => {
     loadDeviceStatus();

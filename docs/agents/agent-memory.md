@@ -918,7 +918,9 @@ Complete code review of all components for accuracy, security, optimization, and
 30. ~~Security audit Round 12 (Session 34: 6 bugs + 2 security issues fixed)~~ **DONE**
 31. ~~Documentation update (Session 34: SDD 1.3.0, TDD 1.3.0, README)~~ **DONE**
 32. ~~Further NOP optimization (Session 35: ~985 KH/s)~~ **DONE**
-33. Phase D: Device API implementation (REST for PDQManager)
+33. ~~PDQFlasher + PDQManager implementation (Session 35: 65 tests)~~ **DONE**
+34. ~~Code review + 7 bug fixes + user guide docs (Session 35)~~ **DONE**
+35. Phase D: Device API implementation (REST for PDQManager)
 
 ---
 
@@ -1674,6 +1676,50 @@ Final NOP binary search pass to squeeze remaining cycles, pool configuration upd
 - `README.md` — Updated hashrate (985), comparison table
 - `docs/sdd.md` — Version 1.4.0, NOP values, performance numbers
 - `docs/agents/agent-memory.md` — Session 35 log
+
+**Status:** Complete
+
+---
+
+### Session 35 (Phase 2) - PDQFlasher, PDQManager, Code Review & Documentation
+
+Implemented both companion tools from scratch, then performed rigorous code review and bug fixing.
+
+**PDQFlasher Implementation (tools/pdqflasher/):**
+- Cross-platform CLI tool for flashing firmware to ESP32 devices
+- Modules: config.py (BoardConfig, VID/PID), detector.py (auto-detect port/board), flasher.py (flash/verify/erase), cli.py (Click CLI)
+- Auto-detects serial port by scanning known USB VID/PID pairs
+- Auto-detects board type via esptool chip identification
+- 37 tests passing (test_config: 10, test_detector: 9, test_flasher: 12, test_cli: 6)
+- Entry point: `pdqflash flash --binary firmware.bin`
+
+**PDQManager Implementation (tools/pdqmanager/):**
+- Fleet management tool with web dashboard + CLI
+- Modules: models.py (Pydantic), discovery.py (mDNS), device.py (HTTP client), manager.py (coordinator), api.py (Flask Blueprint), app.py (factory), cli.py (Click CLI)
+- Web UI: Dark theme with Bitcoin-orange accent, device cards, config editing
+- Templates: base.html, index.html, device.html, settings.html
+- 28 tests passing (test_discovery: 6, test_device: 10, test_api: 12)
+- Entry point: `pdqmanager` (launches Flask + opens browser)
+
+**Code Review — 7 Bugs Found and Fixed:**
+
+| # | Severity | Location | Bug | Fix |
+|---|----------|----------|-----|-----|
+| 1 | Critical | flasher.py `verify_firmware()` | Ignored `expected_checksum`, just ran `read_flash_status` | Changed to use `verify_flash` command with binary file comparison |
+| 2 | Critical | models.py `DeviceStatus.last_seen` | `datetime.now()` evaluated once at class definition time | Changed to `Field(default_factory=datetime.now)` |
+| 3 | Security | device.html | `const DEVICE_ID = "{{ device_id }}"` — XSS via JS context | Changed to `{{ device_id\|tojson }}` filter |
+| 4 | Bug | manager.py `_poll_device()` | Modified `_status_cache` without lock from `refresh_all()` | Added `with self._lock:` around cache writes |
+| 5 | Bug | manager.py `_on_device_found()` | Called `_poll_device()` while holding `_lock` (network I/O under lock) | Moved poll call outside lock scope |
+| 6 | Bug | cli.py CSV export | Manual formatting didn't escape commas/quotes | Replaced with `csv.writer` |
+| 7 | Minor | models.py `pool2_port` | Not validated | Added to `field_validator` |
+| 8 | Minor | detector.py `esp._port.close()` | Not wrapped in try/except | Added safe wrapper |
+
+**Documentation Written:**
+- `tools/pdqflasher/README.md` — Complete user guide
+- `tools/pdqmanager/README.md` — Complete user guide
+- Updated root README.md, SDD v1.5.0, TDD v1.5.0, agent-memory
+
+**Test Results:** 65/65 passing (PDQFlasher: 37, PDQManager: 28)
 
 **Status:** Complete
 
