@@ -1,0 +1,49 @@
+[project]
+name = "pdqmanager"
+version = "1.0.0"
+description = "Fleet management tool for PDQminer ESP32 mining devices"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "flask>=3.0",
+    "flask-cors>=4.0",
+    "zeroconf>=0.131",
+    "requests>=2.31",
+    "pydantic>=2.0",
+    "apscheduler>=3.10",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.0",
+    "responses>=0.25",
+    "black>=24.0",
+    "ruff>=0.3",
+    "mypy>=1.9",
+]
+
+[project.scripts]
+pdqmanager = "pdqmanager.cli:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
+addopts = "-v --tb=short"

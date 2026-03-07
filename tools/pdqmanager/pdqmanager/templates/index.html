@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}PDQManager - Dashboard{% endblock %}
+{% block content %}
+<div class="dashboard">
+    <h1>Fleet Dashboard</h1>
+
+    <div class="stats-grid" id="fleet-stats">
+        <div class="stat-card">
+            <span class="stat-label">Total Devices</span>
+            <span class="stat-value" id="stat-total">0</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Online</span>
+            <span class="stat-value stat-online" id="stat-online">0</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Total Hashrate</span>
+            <span class="stat-value" id="stat-hashrate">0 KH/s</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Total Shares</span>
+            <span class="stat-value" id="stat-shares">0</span>
+        </div>
+    </div>
+
+    <div class="toolbar">
+        <button class="btn btn-primary" onclick="scanNetwork()">Scan Network</button>
+        <button class="btn btn-secondary" onclick="refreshDevices()">Refresh</button>
+    </div>
+
+    <div class="device-grid" id="device-list">
+        <p class="muted">No devices discovered yet. Click "Scan Network" to search.</p>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        refreshDevices();
+        refreshStats();
+        setInterval(refreshDevices, 10000);
+        setInterval(refreshStats, 10000);
+    });
+</script>
+{% endblock %}

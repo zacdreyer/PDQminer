@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}PDQManager - {{ device_id }}{% endblock %}
+{% block content %}
+<div class="device-detail">
+    <h1>Device: <span id="device-name">{{ device_id }}</span></h1>
+    <a href="/" class="back-link">&larr; Back to Dashboard</a>
+
+    <div class="stats-grid" id="device-stats">
+        <div class="stat-card">
+            <span class="stat-label">Hashrate</span>
+            <span class="stat-value" id="dev-hashrate">--</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Uptime</span>
+            <span class="stat-value" id="dev-uptime">--</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Shares</span>
+            <span class="stat-value" id="dev-shares">--</span>
+        </div>
+        <div class="stat-card">
+            <span class="stat-label">Pool</span>
+            <span class="stat-value" id="dev-pool">--</span>
+        </div>
+    </div>
+
+    <div class="auth-section" id="auth-section">
+        <h2>Authentication</h2>
+        <p>Enter the device password to access configuration.</p>
+        <form onsubmit="authDevice(event)" class="auth-form">
+            <input type="password" id="device-password" placeholder="Device password"
+                   required minlength="8" maxlength="64" autocomplete="off">
+            <button type="submit" class="btn btn-primary">Authenticate</button>
+        </form>
+        <p id="auth-status" class="muted"></p>
+    </div>
+
+    <div class="config-section hidden" id="config-section">
+        <h2>Configuration</h2>
+        <form onsubmit="updateConfig(event)" class="config-form">
+            <div class="form-group">
+                <label for="cfg-pool1-host">Primary Pool</label>
+                <input type="text" id="cfg-pool1-host" placeholder="pool.example.com">
+                <input type="number" id="cfg-pool1-port" placeholder="3333" min="1" max="65535">
+            </div>
+            <div class="form-group">
+                <label for="cfg-pool2-host">Backup Pool</label>
+                <input type="text" id="cfg-pool2-host" placeholder="backup.example.com">
+                <input type="number" id="cfg-pool2-port" placeholder="3333" min="1" max="65535">
+            </div>
+            <div class="form-group">
+                <label for="cfg-wallet">Wallet Address</label>
+                <input type="text" id="cfg-wallet" placeholder="bc1q...">
+            </div>
+            <div class="form-group">
+                <label for="cfg-worker">Worker Name</label>
+                <input type="text" id="cfg-worker" placeholder="miner1">
+            </div>
+            <button type="submit" class="btn btn-primary">Save Configuration</button>
+        </form>
+        <div class="device-actions">
+            <button class="btn btn-danger" onclick="restartDevice()">Restart Device</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const DEVICE_ID = "{{ device_id }}";
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadDeviceStatus();
+    setInterval(loadDeviceStatus, 10000);
+});
+
+async function loadDeviceStatus() {
+    try {
+        const resp = await fetch(`/api/devices/${DEVICE_ID}`);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        document.getElementById('dev-hashrate').textContent = data.hashrate_khs
+            ? data.hashrate_khs.toFixed(1) + ' KH/s' : '--';
+        document.getElementById('dev-uptime').textContent = data.uptime_s
+            ? formatUptime(data.uptime_s) : '--';
+        document.getElementById('dev-shares').textContent =
+            `${data.shares_accepted || 0} / ${data.shares_rejected || 0}`;
+        document.getElementById('dev-pool').textContent =
+            data.pool_connected ? 'Connected' : 'Disconnected';
+    } catch (e) { /* ignore polling errors */ }
+}
+
+async function authDevice(event) {
+    event.preventDefault();
+    const pw = document.getElementById('device-password').value;
+    const statusEl = document.getElementById('auth-status');
+
+    const resp = await fetch(`/api/devices/${DEVICE_ID}/auth`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pw }),
+    });
+
+    if (resp.ok) {
+        statusEl.textContent = 'Authenticated!';
+        statusEl.className = 'success';
+        document.getElementById('config-section').classList.remove('hidden');
+        loadConfig();
+    } else {
+        statusEl.textContent = 'Authentication failed.';
+        statusEl.className = 'error';
+    }
+}
+
+async function loadConfig() {
+    const resp = await fetch(`/api/devices/${DEVICE_ID}/config`);
+    if (!resp.ok) return;
+    const cfg = await resp.json();
+    document.getElementById('cfg-pool1-host').value = cfg.pool1_host || '';
+    document.getElementById('cfg-pool1-port').value = cfg.pool1_port || '';
+    document.getElementById('cfg-pool2-host').value = cfg.pool2_host || '';
+    document.getElementById('cfg-pool2-port').value = cfg.pool2_port || '';
+    document.getElementById('cfg-wallet').value = cfg.wallet || '';
+    document.getElementById('cfg-worker').value = cfg.worker || '';
+}
+
+async function updateConfig(event) {
+    event.preventDefault();
+    const data = {
+        pool1_host: document.getElementById('cfg-pool1-host').value,
+        pool1_port: parseInt(document.getElementById('cfg-pool1-port').value) || 3333,
+        pool2_host: document.getElementById('cfg-pool2-host').value || null,
+        pool2_port: parseInt(document.getElementById('cfg-pool2-port').value) || null,
+        wallet: document.getElementById('cfg-wallet').value,
+        worker: document.getElementById('cfg-worker').value,
+    };
+    const resp = await fetch(`/api/devices/${DEVICE_ID}/config`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+    });
+    alert(resp.ok ? 'Configuration saved!' : 'Failed to save configuration.');
+}
+
+async function restartDevice() {
+    if (!confirm('Restart this device?')) return;
+    await fetch(`/api/devices/${DEVICE_ID}/restart`, { method: 'POST' });
+}
+</script>
+{% endblock %}

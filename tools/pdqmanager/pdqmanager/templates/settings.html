@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}PDQManager - Settings{% endblock %}
+{% block content %}
+<div class="settings-page">
+    <h1>Settings</h1>
+
+    <div class="settings-section">
+        <h2>General</h2>
+        <div class="form-group">
+            <label>Auto-refresh interval (seconds)</label>
+            <input type="number" id="refresh-interval" value="10" min="5" max="300">
+        </div>
+    </div>
+
+    <div class="settings-section">
+        <h2>Network</h2>
+        <p class="muted">PDQManager discovers devices via mDNS on the local network.</p>
+        <button class="btn btn-primary" onclick="scanNetwork()">Scan Now</button>
+    </div>
+
+    <div class="settings-section">
+        <h2>About</h2>
+        <table class="info-table">
+            <tr><td>PDQManager</td><td>v1.0.0</td></tr>
+            <tr><td>Project</td><td><a href="https://github.com/zacdreyer/PDQminer" target="_blank" rel="noopener">PDQminer on GitHub</a></td></tr>
+        </table>
+    </div>
+</div>
+{% endblock %}
