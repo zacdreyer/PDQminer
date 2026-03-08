@@ -15,6 +15,7 @@
   <a href="#pdqmanager">Manager</a> •
   <a href="#supported-hardware">Hardware</a> •
   <a href="#installation">Installation</a> •
+  <a href="#docker--native-builds">Docker</a> •
   <a href="#project-roadmap">Roadmap</a> •
   <a href="#contributing">Contributing</a>
 </p>
@@ -22,6 +23,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/status-in%20development-orange" alt="Status"/>
   <img src="https://img.shields.io/badge/platform-ESP32-blue" alt="Platform"/>
+  <img src="https://img.shields.io/badge/platform-Docker%20%7C%20Linux%20%7C%20macOS-blue" alt="Native"/>
   <img src="https://img.shields.io/badge/license-GPL--3.0-green" alt="License"/>
   <img src="https://img.shields.io/badge/hashrate-~985%20KH%2Fs-brightgreen" alt="Hashrate"/>
 </p>
@@ -264,6 +266,70 @@ See [PDQManager User Guide](tools/pdqmanager/README.md) for full documentation.
 
 ---
 
+## Docker & Native Builds
+
+PDQminer can run on **Docker**, **macOS**, or **Linux** using the software SHA256
+path (~46 KH/s per thread). This is useful for development, testing, and protocol
+validation without ESP32 hardware.
+
+### Docker (Recommended for Quick Start)
+
+```bash
+# Create .env with your wallet
+cat > .env << 'EOF'
+PDQ_WALLET=bc1q_YOUR_BITCOIN_ADDRESS
+PDQ_WORKER=docker01
+PDQ_THREADS=2
+EOF
+
+# Build and run
+docker compose up --build
+
+# Run in background
+docker compose up --build -d
+docker compose logs -f
+
+# Stop
+docker compose down
+```
+
+### macOS (Native)
+
+```bash
+# Install tools (if needed)
+xcode-select --install
+
+# Build with clang (no cmake required)
+cd platform/linux && mkdir -p build
+cc -std=c11 -O2 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers \
+  -DPDQ_HEADLESS=1 -DPDQ_LINUX=1 -D_GNU_SOURCE \
+  -I../../src \
+  main.c linux_hal.c linux_config.c linux_wifi.c linux_display.c linux_mining.c \
+  ../../src/core/sha256_engine.c \
+  ../../src/stratum/stratum_client.c \
+  ../../src/api/device_api.c \
+  -lpthread -o build/pdqminer
+
+# Run
+./build/pdqminer --wallet bc1q_YOUR_ADDRESS --threads 2
+```
+
+### Linux (Native)
+
+```bash
+sudo apt-get install build-essential cmake   # Debian/Ubuntu
+cd platform/linux && mkdir -p build && cd build
+cmake -DCMAKE_BUILD_TYPE=Release ..
+make -j$(nproc)
+./pdqminer --wallet bc1q_YOUR_ADDRESS --threads 2
+```
+
+> **Full guide**: See [Docker & Native Build Guide](platform/linux/README.md) for
+> CLI reference, environment variables, config files, multi-instance setups,
+> architecture details, and troubleshooting.
+
+---
+
 ## Performance
 
 ### Current Hashrate
@@ -383,6 +449,8 @@ See [PDQManager User Guide](tools/pdqmanager/README.md) for full documentation.
 
 ### Phase 5: Release
 
+- [x] Docker & native (Linux/macOS) build
+- [x] GitHub Actions CI/CD pipelines
 - [ ] Beta testing program
 - [ ] Documentation finalization
 - [ ] v1.0.0 release
@@ -400,6 +468,16 @@ PDQminer/
 │   ├── network/                # WiFi management
 │   ├── display/                # Display drivers
 │   └── hal/                    # Hardware abstraction
+├── platform/                   # Native platform builds
+│   └── linux/                  # Docker, Linux & macOS build
+│       ├── main.c              # CLI entry point (replaces Arduino setup/loop)
+│       ├── linux_mining.c      # pthread-based mining threads
+│       ├── linux_config.c      # JSON file config (replaces NVS)
+│       ├── linux_hal.c         # POSIX HAL (temp, heap, chip ID)
+│       ├── linux_wifi.c        # Host networking stub
+│       ├── linux_display.c     # Headless display stubs
+│       ├── CMakeLists.txt      # CMake build configuration
+│       └── README.md           # Docker & Native Build Guide
 ├── test/                       # Unit & integration tests
 │   ├── unit/                   # Isolated unit tests
 │   ├── integration/            # Component integration tests
@@ -414,7 +492,12 @@ PDQminer/
 │   ├── tdd.md                  # Test-Driven Development Guide
 │   ├── coding-standards.md     # Coding standards
 │   └── agents/                 # AI agent documentation
-├── platformio.ini              # Build configuration
+├── .github/workflows/          # CI/CD pipelines
+│   ├── ci.yml                  # Test & lint on push/PR
+│   └── release.yml             # Build & release on tags
+├── Dockerfile                  # Multi-stage Docker build
+├── docker-compose.yml          # Docker Compose configuration
+├── platformio.ini              # ESP32 build configuration
 └── README.md                   # This file
 ```
 
