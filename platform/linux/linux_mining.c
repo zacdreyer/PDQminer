@@ -274,3 +274,10 @@ void PdqMiningClearShares(void) {
     atomic_store(&s_State.ShareHead, 0);
     atomic_store(&s_State.ShareTail, 0);
 }
+
+void PdqMiningPause(void) {
+    /* No APB bus contention on Linux */
+}
+
+void PdqMiningResume(void) {
+}

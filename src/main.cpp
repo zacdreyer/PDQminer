@@ -244,8 +244,10 @@ void loop() {
 
 #ifndef PDQ_HEADLESS
     static uint32_t s_LastDisplayUpdate = 0;
-    if (millis() - s_LastDisplayUpdate > 500) {
+    if (millis() - s_LastDisplayUpdate > 2000) {
+        PdqMiningPause();
         PdqDisplayUpdate(&s_Stats);
+        PdqMiningResume();
         s_LastDisplayUpdate = millis();
     }
 #endif
