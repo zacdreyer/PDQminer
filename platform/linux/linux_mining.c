@@ -64,7 +64,10 @@ static uint64_t GetMillis(void) {
 static void QueueShare(const PdqMiningJob_t* p_Job, uint32_t Nonce) {
     unsigned head = atomic_load(&s_State.ShareHead);
     unsigned next = (head + 1) % PDQ_SHARE_QUEUE_SIZE;
-    if (next == atomic_load(&s_State.ShareTail)) return; /* full */
+    if (next == atomic_load(&s_State.ShareTail)) {
+        printf("[Mining] WARN: Share queue full, dropping share nonce=%08X\n", Nonce);
+        return;
+    }
 
     PdqShareInfo_t* s = &s_State.ShareBuffer[head];
     strncpy(s->JobId, p_Job->JobId, 64);

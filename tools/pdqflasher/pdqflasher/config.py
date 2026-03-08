@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
 # Known USB-to-serial chip identifiers (VID, PID)
 ESP32_USB_DEVICES: list[tuple[int, int]] = [
     (0x10C4, 0xEA60),  # Silicon Labs CP210x

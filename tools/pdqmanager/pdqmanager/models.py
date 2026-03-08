@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -30,8 +29,8 @@ class DeviceConfig(BaseModel):
     wifi_ssid: str = ""
     pool1_host: str = ""
     pool1_port: int = 3333
-    pool2_host: Optional[str] = None
-    pool2_port: Optional[int] = None
+    pool2_host: str | None = None
+    pool2_port: int | None = None
     wallet: str = ""
     worker: str = ""
 

@@ -69,8 +69,9 @@ def scan() -> None:
 
     console.print(f"\n[green]Found {len(devices)} device(s):[/green]\n")
     for dev in devices:
-        console.print(f"  {dev.device_id}  {dev.ip_address}:{dev.port}  "
-                       f"v{dev.version}  ({dev.hardware})")
+        console.print(
+            f"  {dev.device_id}  {dev.ip_address}:{dev.port}  " f"v{dev.version}  ({dev.hardware})"
+        )
 
 
 @main.command()

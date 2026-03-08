@@ -1382,13 +1382,16 @@ All external input (network, serial, user) MUST be validated:
 
 | Input Source | Validation Required |
 |-------------|---------------------|
-| JSON from pool | Schema validation, length limits |
+| JSON from pool | Schema validation, length limits, strtol for integers |
 | WiFi credentials | Length limits, character set validation |
 | Hostname/IP | Valid hostname format or IP address |
-| Port numbers | Range: 1-65535 |
+| Port numbers | Range: 1-65535, parsed with strtol |
 | Hex strings | Even length, valid hex chars only |
 | Block headers | Exactly 80 bytes |
 | Nonce values | Any uint32_t valid (full range) |
+| IP addresses | Validated with ipaddress module (Python) |
+
+**Integer Parsing Policy**: Never use `atoi()` on untrusted input. Use `strtol()` with error checking (endptr == start indicates no digits parsed).
 
 **Hex String Validation Example**:
 
@@ -1464,7 +1467,8 @@ Before merging any code, verify:
 
 - [ ] All pointers validated before dereference
 - [ ] All buffers have explicit size limits
-- [ ] No `strcpy`, `sprintf`, `gets` used (use safe variants)
+- [ ] No `strcpy`, `sprintf`, `gets`, `atoi` used (use safe variants)
+- [ ] Integer parsing uses `strtol()` with endptr validation
 - [ ] Integer operations checked for overflow where applicable
 - [ ] Network input length-limited before parsing
 - [ ] Error paths clean up allocated resources
@@ -2405,6 +2409,46 @@ Comprehensive security audit identifying and fixing 6 bugs + 2 security issues a
 
 **Build Verification:** SUCCESS (RAM: 16.5%, Flash: 63.8%)
 **Hardware Verification:** All boot tests PASS, mining loop test PASS, hashrate 949 KH/s confirmed
+
+### 12.18 Security Hardening Round 13
+
+Comprehensive security audit of ALL platforms (ESP32, Linux, macOS, PDQFlasher, PDQManager) identifying and fixing 30+ issues.
+
+**CI/CD Fixes:**
+- Fixed ruff deprecated config (`select` → `[tool.ruff.lint] select`) in both pyproject.toml files
+- Resolved import sorting, line length, deprecated typing, and unused import lint errors
+- Reformatted all Python files with black
+- All 65 Python tests passing
+
+**Critical/High Fixes:**
+
+| # | File | Issue | Fix |
+|---|------|-------|-----|
+| 1 | stratum_client.c | `atoi()` in FindJsonInt — 0 indistinguishable from error | Replaced with `strtol()` + error checking |
+| 2 | stratum_client.c | SendJson doesn't invalidate socket on failure | Added `PdqStratumDisconnect()` on send error |
+| 3 | stratum_client.c | `atoi()` for Extranonce2Size | Replaced with `strtol()` + bounds check |
+| 4 | wifi_manager.cpp | `new DNSServer/WebServer` without null check | `new (std::nothrow)` + null checks |
+| 5 | pdqmanager/app.py | `CORS(app)` allows all origins | Restricted to localhost |
+| 6 | linux_config.c | JSON parser buffer over-read | Break on unterminated strings |
+| 7 | pdqmanager/device.py | No IP validation (SSRF risk) | `ipaddress.ip_address()` validation |
+
+**Medium Fixes:**
+
+| # | File | Issue | Fix |
+|---|------|-------|-----|
+| 8 | mining_task.c | PdqMiningPause() silent timeout | Warning log when PausedCount < 2 |
+| 9 | mining_task.c | Non-RTOS share queue overflow | Warning log on drop |
+| 10 | linux_mining.c | Share queue overflow silent | Warning log on drop |
+| 11 | linux_config.c | Silent key/value truncation | Warning log for oversized entries |
+| 12 | linux/main.c | `atoi()` for port and threads | Replaced with `strtol()` + range checks |
+| 13 | main.cpp | Missing extranonce1 validation | Added zero-length check |
+| 14 | linux/main.c | Missing extranonce1 validation | Added check + early exit |
+
+**Build Verification:**
+- ESP32 cyd_ili9341: SUCCESS (RAM: 16.5%, Flash: 64.6%)
+- ESP32 cyd_ili9341_headless: SUCCESS
+- PDQFlasher: 37/37 tests, lint clean
+- PDQManager: 28/28 tests, lint clean
 
 ---
 

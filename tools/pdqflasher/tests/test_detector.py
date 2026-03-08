@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
 from unittest.mock import Mock, patch
+
+import pytest
 
 from pdqflasher.detector import detect_board, detect_port, get_chip_info
 

@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 
 #ifdef ESP32
 #include <lwip/sockets.h>
@@ -119,10 +120,16 @@ static PdqError_t SendJson(const char* p_Json)
 
     size_t Len = strlen(p_Json);
     ssize_t Sent = send(s_Ctx.Socket, p_Json, Len, 0);
-    if (Sent != (ssize_t)Len) return PdqErrorTimeout;
+    if (Sent != (ssize_t)Len) {
+        PdqStratumDisconnect();
+        return PdqErrorNotConnected;
+    }
 
     Sent = send(s_Ctx.Socket, "\n", 1, 0);
-    if (Sent != 1) return PdqErrorTimeout;
+    if (Sent != 1) {
+        PdqStratumDisconnect();
+        return PdqErrorNotConnected;
+    }
 
     return PdqOk;
 }
@@ -163,7 +170,12 @@ static int32_t FindJsonInt(const char* p_Json, const char* p_Key)
     if (p_Start == NULL) return -1;
     
     while (*p_Start == ' ' || *p_Start == ':') p_Start++;
-    return atoi(p_Start);
+    char* p_End = NULL;
+    long Val = strtol(p_Start, &p_End, 10);
+    if (p_End == p_Start) return -1;  /* No digits parsed */
+    if (Val < INT32_MIN) return INT32_MIN;
+    if (Val > INT32_MAX) return INT32_MAX;
+    return (int32_t)Val;
 }
 
 static bool FindJsonBool(const char* p_Json, const char* p_Key)
@@ -215,7 +227,10 @@ static PdqError_t HandleSubscribeResult(const char* p_Json)
     p_Quote = strchr(p_EndQuote + 1, ',');
     if (p_Quote) {
         while (*p_Quote == ',' || *p_Quote == ' ') p_Quote++;
-        s_Ctx.Extranonce2Size = (uint32_t)atoi(p_Quote);
+        char* p_NumEnd = NULL;
+        long En2 = strtol(p_Quote, &p_NumEnd, 10);
+        if (p_NumEnd == p_Quote || En2 < 0) En2 = 0;
+        s_Ctx.Extranonce2Size = (uint32_t)En2;
         if (s_Ctx.Extranonce2Size > PDQ_STRATUM_MAX_EXTRANONCE_LEN) {
             s_Ctx.Extranonce2Size = PDQ_STRATUM_MAX_EXTRANONCE_LEN;
         }

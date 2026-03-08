@@ -74,10 +74,18 @@ int main(int argc, char* argv[]) {
     const char* configFile = NULL;
 
     snprintf(poolHost, sizeof(poolHost), "%s", EnvOr("PDQ_POOL_HOST", "pool.nerdminers.org"));
-    poolPort = (uint16_t)atoi(EnvOr("PDQ_POOL_PORT", "3333"));
+    {
+        const char* portStr = EnvOr("PDQ_POOL_PORT", "3333");
+        long portVal = strtol(portStr, NULL, 10);
+        poolPort = (portVal > 0 && portVal <= 65535) ? (uint16_t)portVal : 3333;
+    }
     snprintf(wallet, sizeof(wallet), "%s", EnvOr("PDQ_WALLET", ""));
     snprintf(worker, sizeof(worker), "%s", EnvOr("PDQ_WORKER", "pdqlinux"));
-    threads = atoi(EnvOr("PDQ_THREADS", "2"));
+    {
+        const char* threadStr = EnvOr("PDQ_THREADS", "2");
+        long threadVal = strtol(threadStr, NULL, 10);
+        threads = (threadVal > 0 && threadVal <= 32) ? (int)threadVal : 2;
+    }
     difficulty = atof(EnvOr("PDQ_DIFFICULTY", "1.0"));
 
     /* Parse CLI args */
@@ -97,10 +105,18 @@ int main(int argc, char* argv[]) {
     while ((opt = getopt_long(argc, argv, "H:P:w:W:t:d:c:h", longOpts, NULL)) != -1) {
         switch (opt) {
             case 'H': snprintf(poolHost, sizeof(poolHost), "%s", optarg); break;
-            case 'P': poolPort = (uint16_t)atoi(optarg); break;
+            case 'P': {
+                long pv = strtol(optarg, NULL, 10);
+                poolPort = (pv > 0 && pv <= 65535) ? (uint16_t)pv : 3333;
+                break;
+            }
             case 'w': snprintf(wallet, sizeof(wallet), "%s", optarg); break;
             case 'W': snprintf(worker, sizeof(worker), "%s", optarg); break;
-            case 't': threads = atoi(optarg); break;
+            case 't': {
+                long tv = strtol(optarg, NULL, 10);
+                threads = (tv > 0 && tv <= 32) ? (int)tv : 2;
+                break;
+            }
             case 'd': difficulty = atof(optarg); break;
             case 'c': configFile = optarg; break;
             case 'h':
@@ -188,6 +204,11 @@ int main(int argc, char* argv[]) {
     uint8_t extranonce1[PDQ_STRATUM_MAX_EXTRANONCE_LEN];
     uint8_t extranonce1Len = 0;
     PdqStratumGetExtranonce(extranonce1, &extranonce1Len);
+    if (extranonce1Len == 0) {
+        fprintf(stderr, "[PDQminer] ERROR: Invalid extranonce1 (zero length)\n");
+        PdqStratumDisconnect();
+        return 1;
+    }
 
     PdqStratumSuggestDifficulty(difficulty);
 

@@ -29,7 +29,7 @@ def create_app(device_manager: DeviceManager | None = None) -> Flask:
         static_folder="static",
     )
 
-    CORS(app)
+    CORS(app, origins=["http://localhost:5000", "http://127.0.0.1:5000"])
 
     if device_manager is None:
         device_manager = DeviceManager()

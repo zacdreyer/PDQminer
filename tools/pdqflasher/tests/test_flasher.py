@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
 from unittest.mock import patch
 
-from pdqflasher.flasher import flash_firmware, verify_firmware, erase_flash
+import pytest
+
+from pdqflasher.flasher import erase_flash, flash_firmware, verify_firmware
 
 
 class TestFlashFirmware:
@@ -54,9 +54,7 @@ class TestFlashFirmware:
             )
 
     @patch("pdqflasher.flasher.esptool")
-    def test_flash_firmware_with_verify_flag(
-        self, mock_esptool: object, tmp_path: Path
-    ) -> None:
+    def test_flash_firmware_with_verify_flag(self, mock_esptool: object, tmp_path: Path) -> None:
         """Verify flag is passed to esptool."""
         firmware = tmp_path / "test.bin"
         firmware.write_bytes(b"\x00" * 1024)

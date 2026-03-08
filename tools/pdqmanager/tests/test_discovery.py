@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import Mock, patch
 
-import pytest
-
 from pdqmanager.discovery import PDQMinerDiscovery
 from pdqmanager.models import DiscoveredDevice
 

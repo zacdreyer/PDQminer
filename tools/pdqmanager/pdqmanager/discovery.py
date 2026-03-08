@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import socket
-from typing import Callable
+from collections.abc import Callable
 
 from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
 

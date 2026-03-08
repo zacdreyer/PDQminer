@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from typing import Any
 
@@ -21,9 +22,14 @@ class DeviceClient:
     Args:
         ip_address: Device IP address.
         port: Device HTTP port (default 80).
+
+    Raises:
+        ValueError: If ip_address is not a valid IP address.
     """
 
     def __init__(self, ip_address: str, port: int = 80) -> None:
+        # Validate IP address to prevent SSRF
+        ipaddress.ip_address(ip_address)
         self.ip_address = ip_address
         self.port = port
         self.base_url = f"http://{ip_address}:{port}" if port != 80 else f"http://{ip_address}"
@@ -85,7 +91,11 @@ class DeviceClient:
                 self.token = data.get("token")
                 logger.info("Authenticated with %s", self.ip_address)
                 return True
-            logger.warning("Authentication failed for %s (HTTP %d)", self.ip_address, resp.status_code)
+            logger.warning(
+                "Authentication failed for %s (HTTP %d)",
+                self.ip_address,
+                resp.status_code,
+            )
             return False
         except requests.RequestException as e:
             logger.error("Auth request failed for %s: %s", self.ip_address, e)

@@ -36,9 +36,7 @@ def detect_port() -> str | None:
         if port_info.vid is None:
             continue
         if (port_info.vid, port_info.pid) in known_pairs:
-            logger.info(
-                "Detected ESP32 device on %s (%s)", port_info.device, port_info.description
-            )
+            logger.info("Detected ESP32 device on %s (%s)", port_info.device, port_info.description)
             return port_info.device
 
     return None

@@ -9,6 +9,7 @@
 #include "config/config_manager.h"
 #include <string.h>
 #include <stdio.h>
+#include <new>
 
 #ifdef ESP32
 #include <WiFi.h>
@@ -289,9 +290,16 @@ PdqError_t PdqWifiStartPortal(void)
     if (Err != PdqOk) return Err;
     
 #ifdef ESP32
-    s_pDns = new DNSServer();
-    s_pServer = new WebServer(80);
+    s_pDns = new (std::nothrow) DNSServer();
+    s_pServer = new (std::nothrow) WebServer(80);
     
+    if (!s_pDns || !s_pServer) {
+        delete s_pDns;  s_pDns = NULL;
+        delete s_pServer;  s_pServer = NULL;
+        PdqWifiStopAp();
+        return PdqErrorNoMemory;
+    }
+
     s_pDns->start(53, "*", WiFi.softAPIP());
     
     s_pServer->on("/", HandleRoot);

@@ -1725,4 +1725,55 @@ Implemented both companion tools from scratch, then performed rigorous code revi
 
 ---
 
+### Session 36: CI/CD Fix + Comprehensive Security Audit + Hardening
+
+**Date:** 2025
+
+**Focus:** Fix CI/CD pipeline failures, comprehensive security audit across all platforms, implement 30+ security fixes, update documentation.
+
+**CI/CD Fixes:**
+- ruff deprecated config: `select` → `[tool.ruff.lint] select` in both pyproject.toml files
+- Fixed import sorting (I001), line length (E501), deprecated Optional (UP045), unused imports (F401)
+- Ran `black` across all Python files
+- All 65 tests pass, lint clean, format clean
+
+**Security Audit (Comprehensive):**
+
+Two full-depth subagent reviews of all code:
+- ESP32 C code: 15 issues identified (3 critical, 3 high, 4 medium, 5 low)
+- Linux + Python code: 15+ issues identified (2 critical, 4 high, 4 medium, 3 low)
+
+**Security Fixes Implemented:**
+
+| # | Severity | File | Issue | Fix |
+|---|----------|------|-------|-----|
+| 1 | Critical | stratum_client.c | `atoi()` in FindJsonInt — 0 indistinguishable from parse error | Replaced with `strtol()` + error checking |
+| 2 | Critical | stratum_client.c | SendJson doesn't invalidate socket on failure | Added `PdqStratumDisconnect()` on send failure |
+| 3 | Critical | pdqmanager/app.py | `CORS(app)` allows all origins | Restricted to localhost origins |
+| 4 | High | wifi_manager.cpp | `new DNSServer()` / `new WebServer()` without null check | Changed to `new (std::nothrow)` with null checks, return PdqErrorNoMemory |
+| 5 | High | stratum_client.c | `atoi()` for Extranonce2Size in HandleSubscribeResult | Replaced with `strtol()` + bounds validation |
+| 6 | High | linux_config.c | JSON parser buffer over-read on unterminated strings | Added `if (*p != '"') break;` guards |
+| 7 | High | pdqmanager/device.py | No IP validation — SSRF risk | Added `ipaddress.ip_address()` validation |
+| 8 | Medium | mining_task.c | PdqMiningPause() silently fails on timeout | Added warning log when PausedCount < 2 |
+| 9 | Medium | mining_task.c (non-RTOS) | Share queue overflow drops shares silently | Added warning log on overflow |
+| 10 | Medium | linux_mining.c | Share queue overflow drops shares silently | Added warning log on overflow |
+| 11 | Medium | linux_config.c | Silent key/value truncation | Added warning log for oversized entries |
+| 12 | Medium | linux/main.c | `atoi()` for port and thread count | Replaced with `strtol()` + range validation |
+| 13 | Medium | main.cpp | Missing extranonce1 validation | Added `extranonce1Len == 0` check |
+| 14 | Medium | linux/main.c | Missing extranonce1 validation | Added check + early exit |
+
+**Build Verification:**
+- ESP32 cyd_ili9341: SUCCESS (RAM 16.5%, Flash 64.6%)
+- ESP32 cyd_ili9341_headless: SUCCESS
+- PDQFlasher: 37/37 tests pass, lint clean
+- PDQManager: 28/28 tests pass, lint clean
+
+**Hashrate:** 1081 KH/s (HW:1040 SW:40) — confirmed from Session 35
+
+**Version:** 0.2.5
+
+**Status:** Complete
+
+---
+
 *This document must be updated at the end of each agent session.*

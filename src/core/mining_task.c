@@ -270,6 +270,8 @@ static void QueueShareNonRtos(const PdqMiningJob_t* p_Job, uint32_t Nonce) {
         Share->Nonce = Nonce;
         Share->NTime = p_Job->NTime;
         s_State.ShareHead = NextHead;
+    } else {
+        printf("[MINING] WARN: Share queue full, dropping share nonce=%08X\n", Nonce);
     }
 }
 #endif
@@ -435,6 +437,9 @@ void PdqMiningPause(void) {
     uint32_t Timeout = xTaskGetTickCount() + pdMS_TO_TICKS(3000);
     while (s_State.PausedCount < 2 && xTaskGetTickCount() < Timeout) {
         vTaskDelay(1);
+    }
+    if (s_State.PausedCount < 2) {
+        printf("[MINING] WARN: Pause timeout, only %d/2 tasks paused\n", s_State.PausedCount);
     }
 #endif
 }

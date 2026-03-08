@@ -2194,6 +2194,33 @@ The following optimizations have been verified correct:
 | Mining loop test | PASS | PASS (verified via SW) |
 | Stack frame | ≤96 bytes | 64 bytes (1 spill) |
 
+### 13.9 Security Hardening Round 13 Verification
+
+**Comprehensive security audit across all platforms (ESP32, Linux, Python tools).**
+
+| Component | Tests | Status | Issues Fixed |
+|-----------|-------|--------|--------------|
+| Stratum Client (FindJsonInt) | Manual + build | PASS | atoi → strtol with error checking |
+| Stratum Client (SendJson) | Manual + build | PASS | Socket invalidation on send failure |
+| Stratum Client (Extranonce2) | Manual + build | PASS | atoi → strtol + bounds validation |
+| WiFi Manager (allocation) | Manual + build | PASS | new (std::nothrow) + null checks |
+| Mining Task (pause) | Manual + build | PASS | Warning log on pause timeout |
+| Mining Task (share queue) | Manual + build | PASS | Warning log on overflow |
+| Linux Config (JSON parser) | Manual + build | PASS | Unterminated string protection |
+| Linux Config (truncation) | Manual + build | PASS | Warning log on oversized entries |
+| Linux Mining (share queue) | Manual + build | PASS | Warning log on overflow |
+| Linux Main (port/threads) | Manual + build | PASS | atoi → strtol + range validation |
+| ESP32 Main (extranonce) | Manual + build | PASS | Zero-length validation |
+| Linux Main (extranonce) | Manual + build | PASS | Zero-length validation + early exit |
+| PDQManager (CORS) | 28 pytest | PASS | Restricted to localhost origins |
+| PDQManager (IP validation) | 28 pytest | PASS | ipaddress.ip_address() validation |
+| PDQFlasher (lint) | 37 pytest | PASS | ruff + black clean |
+| ESP32 Build | pio run | SUCCESS | RAM: 16.5%, Flash: 64.6% |
+| Headless Build | pio run | SUCCESS | cyd_ili9341_headless |
+
+**Total Issues Resolved This Round:** 14 security + bug fixes
+**Cumulative Issues Resolved:** 45
+
 ---
 
 *This document defines the testing methodology for all PDQminer development.*

@@ -123,7 +123,5 @@ def erase(port: str, baud: int) -> None:
     if result["success"]:
         console.print("[bold green]Flash erased successfully![/bold green]")
     else:
-        console.print(
-            f"[bold red]Erase failed:[/bold red] {result.get('error', 'Unknown error')}"
-        )
+        console.print(f"[bold red]Erase failed:[/bold red] {result.get('error', 'Unknown error')}")
         raise SystemExit(1)

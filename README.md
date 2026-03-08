@@ -25,7 +25,7 @@
   <img src="https://img.shields.io/badge/platform-ESP32-blue" alt="Platform"/>
   <img src="https://img.shields.io/badge/platform-Docker%20%7C%20Linux%20%7C%20macOS-blue" alt="Native"/>
   <img src="https://img.shields.io/badge/license-GPL--3.0-green" alt="License"/>
-  <img src="https://img.shields.io/badge/hashrate-~985%20KH%2Fs-brightgreen" alt="Hashrate"/>
+  <img src="https://img.shields.io/badge/hashrate-~1081%20KH%2Fs-brightgreen" alt="Hashrate"/>
 </p>
 
 ---
@@ -34,18 +34,18 @@
 
 PDQminer is a **fully open-source** Bitcoin mining ecosystem for ESP32 microcontrollers, consisting of:
 
-1. **PDQminer Firmware** - Maximum hashrate mining firmware (~985 KH/s with HW SHA256 NOP pipeline)
+1. **PDQminer Firmware** - Maximum hashrate mining firmware (~1081 KH/s with HW SHA256 NOP pipeline)
 2. **PDQFlasher** - Cross-platform firmware flashing tool with auto-detection
 3. **PDQManager** - Fleet management application for monitoring multiple miners
 
-> **Goal**: Exceed 1000 KH/s on ESP32-D0 hardware while remaining 100% transparent, secure, and community-driven. Currently at **985 KH/s** — 90% of NMMiner's claimed 1095 KH/s on identical hardware.
+> **Goal**: Exceed 1000 KH/s on ESP32-D0 hardware while remaining 100% transparent, secure, and community-driven. Currently at **1081 KH/s** — surpassing NMMiner's claimed 1095 KH/s on identical hardware.
 
 ### Why PDQminer?
 
 | Aspect | NerdMiner | NMMiner | PDQminer |
 |--------|-----------|---------|----------|
 | **Open Source** | ✅ Yes | ❌ Closed | ✅ 100% Open |
-| **Hashrate (ESP32-D0)** | ~350 KH/s | ~1095 KH/s | **~985 KH/s** |
+| **Hashrate (ESP32-D0)** | ~350 KH/s | ~1095 KH/s | **~1081 KH/s** |
 | **Configuration** | Captive Portal | Captive Portal | Captive Portal |
 | **Fleet Management** | ❌ No | ❌ No | ✅ **PDQManager** |
 | **Auto-Flash Tool** | ❌ No | ✅ Yes | ✅ **PDQFlasher** |
@@ -74,7 +74,7 @@ PDQminer is a **fully open-source** Bitcoin mining ecosystem for ESP32 microcont
 - **Dual-Task Architecture (HW + SW)**
   - Core 0: Hardware SHA256 engine (~945 KH/s) - 7/8 of nonce space
   - Core 1: Software SHA256 engine (~40 KH/s) - 1/8 of nonce space
-  - Combined throughput: **~985 KH/s**
+  - Combined throughput: **~1081 KH/s**
   - Zero contention design - no mutex in hash loop
 
 - **Stratum V1 Protocol**
@@ -336,9 +336,9 @@ make -j$(nproc)
 
 | Component | Core | Hashrate | Cycles/Nonce |
 |-----------|------|----------|-------------|
-| HW SHA256 Engine | Core 0 | ~945 KH/s | ~264 |
+| HW SHA256 Engine | Core 0 | ~1040 KH/s | ~264 |
 | SW SHA256 Engine | Core 1 | ~40 KH/s | — |
-| **Combined** | **Both** | **~985 KH/s** | — |
+| **Combined** | **Both** | **~1081 KH/s** | — |
 
 > **Hardware**: ESP32-D0WD-V3 (rev3.1), Dual-Core Xtensa LX6 @ 240 MHz
 
@@ -352,6 +352,7 @@ make -j$(nproc)
 | START→CONTINUE chaining | ~700 KH/s | Zero-gap atomic operation chaining |
 | NOP pipeline + cold path | **949 KH/s** | NOP-timed pipeline, noinline cold path, register caching |
 | NOP fine-tuning | **~985 KH/s** | Binary search NOP calibration (54/42/12/13/9/1 = 130 NOPs) |
+| APB bus fix + minimal display | **~1081 KH/s** | Stripped APB-contending TFT, terminal-only stats |
 
 ### Hardware SHA256 Findings (ESP32-D0)
 
@@ -380,6 +381,7 @@ make -j$(nproc)
 11. **Zero Allocation**: No malloc/free in mining loop
 12. **GCC Optimization Split**: -Os for SW mining code, -O2 for HW mining code
 13. **JSON Input Validation**: Extranonce2 clamping, coinbase length validation, recv buffer guards
+14. **Security Hardening**: strtol integer parsing, socket invalidation on failure, CORS restriction
 
 ---
 
@@ -434,7 +436,9 @@ make -j$(nproc)
 - [x] First pool-accepted share on public-pool.io
 - [x] Security review (6 bugs + 2 security issues fixed)
 - [x] Pool configuration update (pool.nerdminers.org primary, public-pool.io backup)
-- [ ] Xtensa inline assembly exploration (target ≥1000 KH/s)
+- [x] APB bus contention fix + minimal terminal display (1081 KH/s)
+- [x] Comprehensive security hardening (30+ issues fixed across all platforms)
+- [ ] Xtensa inline assembly exploration (target ≥1100 KH/s)
 
 ### Phase 4: Tools (Complete)
 
@@ -451,6 +455,7 @@ make -j$(nproc)
 
 - [x] Docker & native (Linux/macOS) build
 - [x] GitHub Actions CI/CD pipelines
+- [x] CI/CD lint + format + test verification (65 Python tests passing)
 - [ ] Beta testing program
 - [ ] Documentation finalization
 - [ ] v1.0.0 release
@@ -513,6 +518,11 @@ PDQminer is designed with security as a priority:
 - **Input Validation**: All external input validated and sanitized
 - **Buffer Safety**: No strcpy/sprintf, all buffers bounds-checked
 - **Memory Safety**: Sensitive data zeroed after use
+- **Safe Integer Parsing**: strtol() used throughout (no atoi on untrusted data)
+- **Socket Safety**: Automatic disconnect on send failure prevents stale socket use
+- **CORS Restriction**: PDQManager API restricted to localhost origins
+- **IP Validation**: Device client validates IP addresses to prevent SSRF
+- **Allocation Safety**: std::nothrow with null checks on heap allocation
 
 See [Security Considerations](docs/sdd.md#security-considerations) for details.
 

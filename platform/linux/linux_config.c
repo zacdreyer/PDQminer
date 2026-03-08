@@ -92,8 +92,9 @@ static void LoadFile(void) {
         p++;
         const char* kStart = p;
         while (*p && *p != '"') p++;
+        if (*p != '"') break;  /* Unterminated string */
         size_t kLen = (size_t)(p - kStart);
-        if (*p == '"') p++;
+        p++;
 
         /* Skip : */
         while (*p == ' ' || *p == '\t' || *p == ':') p++;
@@ -103,8 +104,9 @@ static void LoadFile(void) {
         p++;
         const char* vStart = p;
         while (*p && *p != '"') p++;
+        if (*p != '"') break;  /* Unterminated string */
         size_t vLen = (size_t)(p - vStart);
-        if (*p == '"') p++;
+        p++;
 
         if (kLen > 0 && kLen < PDQ_LINUX_CONFIG_KEY_LEN && vLen < PDQ_LINUX_CONFIG_VAL_LEN) {
             memcpy(s_Store[s_Count].Key, kStart, kLen);
@@ -112,6 +114,9 @@ static void LoadFile(void) {
             memcpy(s_Store[s_Count].Value, vStart, vLen);
             s_Store[s_Count].Value[vLen] = '\0';
             s_Count++;
+        } else if (kLen > 0) {
+            fprintf(stderr, "[CONFIG] WARN: Skipping oversized key/value (key=%zu, val=%zu)\n",
+                    kLen, vLen);
         }
     }
 

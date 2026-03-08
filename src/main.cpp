@@ -130,6 +130,10 @@ void setup() {
     }
 
     PdqStratumGetExtranonce(s_Extranonce1, &s_Extranonce1Len);
+    if (s_Extranonce1Len == 0) {
+        Serial.println("[PDQminer] ERROR: Invalid extranonce1 (zero length)");
+        return;
+    }
 
     /* Request a reasonable share difficulty from the pool.
      * At ~1 MH/s, difficulty 1.0 gives ~1 share every ~4.3 seconds. */

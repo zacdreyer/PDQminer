@@ -431,7 +431,7 @@ kill -9 $(pgrep pdqminer)
 
 | Platform | Hashrate | Notes |
 |---|---|---|
-| ESP32-D0WD-V3 | ~985 KH/s | HW SHA + dual-core (production) |
+| ESP32-D0WD-V3 | ~1081 KH/s | HW SHA + dual-core (production) |
 | Linux / macOS (1 thread) | ~46 KH/s | Software SHA256 |
 | Linux / macOS (2 threads) | ~92 KH/s | Split nonce space |
 | Linux / macOS (4 threads) | ~184 KH/s | 4-way nonce split |
