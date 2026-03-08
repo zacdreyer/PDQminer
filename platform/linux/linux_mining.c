@@ -245,6 +245,10 @@ PdqError_t PdqMiningGetStats(PdqMinerStats_t* p_Stats) {
     p_Stats->BlocksFound = atomic_load(&s_State.BlocksFound);
     p_Stats->Uptime = (uint32_t)(upMs / 1000);
     p_Stats->Temperature = 0.0f;
+    p_Stats->Difficulty = 0.0;
+    p_Stats->Templates = 0;
+    p_Stats->BestDiff = 0.0;
+    p_Stats->WifiConnected = true;
 
     return PdqOk;
 }

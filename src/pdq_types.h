@@ -13,8 +13,8 @@
 #include <stdbool.h>
 
 #define PDQ_VERSION_MAJOR 0
-#define PDQ_VERSION_MINOR 1
-#define PDQ_VERSION_PATCH 0
+#define PDQ_VERSION_MINOR 2
+#define PDQ_VERSION_PATCH 5
 
 typedef enum {
     PdqOk = 0,
@@ -64,6 +64,10 @@ typedef struct {
     uint32_t BlocksFound;
     uint32_t Uptime;
     float    Temperature;
+    double   Difficulty;   /* Current pool difficulty */
+    uint32_t Templates;    /* Job templates received */
+    double   BestDiff;     /* Best share difficulty found */
+    bool     WifiConnected;
 } PdqMinerStats_t;
 
 #define PDQ_MAX_SSID_LEN       32

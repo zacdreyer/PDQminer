@@ -17,7 +17,9 @@ extern "C" {
 typedef enum {
     PdqDisplayModeHeadless = 0,
     PdqDisplayModeMinimal,
-    PdqDisplayModeStandard
+    PdqDisplayModeStandard,
+    PdqDisplayModeTrinityPro,
+    PdqDisplayModeTrinityLite
 } PdqDisplayMode_t;
 
 PdqError_t PdqDisplayInit(PdqDisplayMode_t Mode);
@@ -25,6 +27,7 @@ PdqError_t PdqDisplayUpdate(const PdqMinerStats_t* p_Stats);
 PdqError_t PdqDisplayShowMessage(const char* p_Line1, const char* p_Line2);
 PdqError_t PdqDisplaySetBrightness(uint8_t Percent);
 PdqError_t PdqDisplayOff(void);
+PdqDisplayMode_t PdqDisplayCycleTheme(void);
 
 #ifdef __cplusplus
 }

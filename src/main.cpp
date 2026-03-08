@@ -25,6 +25,7 @@ static PdqStratumJob_t s_StratumJob;
 static uint8_t s_Extranonce1[PDQ_STRATUM_MAX_EXTRANONCE_LEN];
 static uint8_t s_Extranonce1Len = 0;
 static uint32_t s_Extranonce2 = 0;
+static uint32_t s_TemplateCount = 0;
 
 #define SETUP_TIMEOUT_MS 30000
 
@@ -63,7 +64,7 @@ void setup() {
     }
 
 #ifndef PDQ_HEADLESS
-    PdqDisplayInit(PdqDisplayModeMinimal);
+    PdqDisplayInit(PdqDisplayModeTrinityPro);
     PdqDisplayShowMessage("PDQminer", "Initializing...");
 #endif
 
@@ -196,6 +197,7 @@ void loop() {
     if (PdqStratumHasNewJob()) {
         Serial.println("[DBG] New job received!");
         PdqStratumGetJob(&s_StratumJob);
+        s_TemplateCount++;
 
         if (s_StratumJob.CleanJobs) {
             Serial.println("[DBG] Clean jobs - clearing share queue");
@@ -235,6 +237,10 @@ void loop() {
     }
 
     PdqMiningGetStats(&s_Stats);
+    s_Stats.Temperature = PdqHalGetTemperature();
+    s_Stats.Difficulty = PdqStratumGetDifficulty();
+    s_Stats.Templates = s_TemplateCount;
+    s_Stats.WifiConnected = PdqWifiIsConnected();
 
 #ifndef PDQ_HEADLESS
     static uint32_t s_LastDisplayUpdate = 0;

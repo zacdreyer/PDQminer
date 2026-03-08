@@ -363,6 +363,10 @@ PdqError_t PdqMiningGetStats(PdqMinerStats_t* p_Stats) {
     p_Stats->SharesRejected = s_State.SharesRejected;
     p_Stats->BlocksFound = s_State.BlocksFound;
     p_Stats->Temperature = 0.0f;
+    p_Stats->Difficulty = 0.0;
+    p_Stats->Templates = 0;
+    p_Stats->BestDiff = 0.0;
+    p_Stats->WifiConnected = false;
 
     return PdqOk;
 }

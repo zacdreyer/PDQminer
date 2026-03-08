@@ -31,3 +31,7 @@ PdqError_t PdqDisplaySetBrightness(uint8_t Percent) {
 PdqError_t PdqDisplayOff(void) {
     return PdqOk;
 }
+
+PdqDisplayMode_t PdqDisplayCycleTheme(void) {
+    return PdqDisplayModeHeadless;
+}
