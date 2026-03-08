@@ -50,6 +50,8 @@ typedef struct {
     volatile uint32_t       SharesAccepted;
     volatile uint32_t       SharesRejected;
     volatile uint32_t       BlocksFound;
+    volatile bool           PauseRequested;
+    volatile uint8_t        PausedCount;
     uint32_t                StartTime;
     PdqMiningJob_t          CurrentJob;
     uint32_t                CurrentNonce;
@@ -164,6 +166,16 @@ PDQ_IRAM_ATTR static void MiningTaskCore1(void* p_Param) {
                 LastHashReport = Now;
             }
 
+            /* Pause support: spin here while pause is requested */
+            if (s_State.PauseRequested) {
+                __atomic_fetch_add(&s_State.PausedCount, 1, __ATOMIC_SEQ_CST);
+                while (s_State.PauseRequested && s_State.Running) {
+                    esp_task_wdt_reset();
+                    vTaskDelay(1);
+                }
+                __atomic_fetch_sub(&s_State.PausedCount, 1, __ATOMIC_SEQ_CST);
+            }
+
             if (BatchEnd >= JobEnd) break;
             Base = BatchEnd + 1;
         }
@@ -227,6 +239,16 @@ PDQ_IRAM_ATTR static void MiningTaskHw(void* p_Param) {
                 __atomic_fetch_add(&s_State.TotalHashesHw, LocalHashes, __ATOMIC_RELAXED);
                 LocalHashes = 0;
                 LastHashReport = Now;
+            }
+
+            /* Pause support: spin here while pause is requested */
+            if (s_State.PauseRequested) {
+                __atomic_fetch_add(&s_State.PausedCount, 1, __ATOMIC_SEQ_CST);
+                while (s_State.PauseRequested && s_State.Running) {
+                    esp_task_wdt_reset();
+                    vTaskDelay(1);
+                }
+                __atomic_fetch_sub(&s_State.PausedCount, 1, __ATOMIC_SEQ_CST);
             }
 
             if (BatchEnd >= JobEnd) break;
@@ -403,5 +425,22 @@ void PdqMiningClearShares(void) {
     }
 #else
     s_State.ShareHead = s_State.ShareTail = 0;
+#endif
+}
+
+void PdqMiningPause(void) {
+#if PDQ_USE_RTOS
+    s_State.PauseRequested = true;
+    /* Wait until both tasks have entered paused state */
+    uint32_t Timeout = xTaskGetTickCount() + pdMS_TO_TICKS(3000);
+    while (s_State.PausedCount < 2 && xTaskGetTickCount() < Timeout) {
+        vTaskDelay(1);
+    }
+#endif
+}
+
+void PdqMiningResume(void) {
+#if PDQ_USE_RTOS
+    s_State.PauseRequested = false;
 #endif
 }

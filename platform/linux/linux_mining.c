@@ -274,3 +274,11 @@ void PdqMiningClearShares(void) {
     atomic_store(&s_State.ShareHead, 0);
     atomic_store(&s_State.ShareTail, 0);
 }
+
+void PdqMiningPause(void) {
+    /* No-op on Linux */
+}
+
+void PdqMiningResume(void) {
+    /* No-op on Linux */
+}

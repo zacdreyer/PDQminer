@@ -64,7 +64,7 @@ void setup() {
     }
 
 #ifndef PDQ_HEADLESS
-    PdqDisplayInit(PdqDisplayModeHeadless);
+    PdqDisplayInit(PdqDisplayModeMinimal);
 #endif
 
     if (!PdqConfigIsValid()) {
@@ -160,6 +160,16 @@ void setup() {
     PdqMiningInit();
     Serial.println("[DBG] Mining init done");
 
+#ifndef PDQ_HEADLESS
+    {
+        char Ip[16];
+        PdqWifiGetIp(Ip, sizeof(Ip));
+        char PoolStr[80];
+        snprintf(PoolStr, sizeof(PoolStr), "%s:%d", s_Config.PrimaryPool.Host, s_Config.PrimaryPool.Port);
+        PdqDisplayShowInfo(PoolStr, Ip, s_Config.WorkerName);
+    }
+#endif
+
     PdqMiningStart();
     Serial.println("[DBG] Mining start called");
 
@@ -242,6 +252,13 @@ void loop() {
                       s_Stats.SharesAccepted, s_Stats.SharesRejected,
                       s_Stats.Difficulty, (unsigned long)s_Stats.Templates,
                       (unsigned long)s_Stats.Uptime);
+
+#ifndef PDQ_HEADLESS
+        PdqMiningPause();
+        PdqDisplayUpdate(&s_Stats);
+        PdqMiningResume();
+#endif
+
         s_LastSerialUpdate = millis();
     }
 

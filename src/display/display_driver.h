@@ -25,6 +25,7 @@ typedef enum {
 PdqError_t PdqDisplayInit(PdqDisplayMode_t Mode);
 PdqError_t PdqDisplayUpdate(const PdqMinerStats_t* p_Stats);
 PdqError_t PdqDisplayShowMessage(const char* p_Line1, const char* p_Line2);
+PdqError_t PdqDisplayShowInfo(const char* p_Pool, const char* p_Ip, const char* p_Worker);
 PdqError_t PdqDisplaySetBrightness(uint8_t Percent);
 PdqError_t PdqDisplayOff(void);
 PdqDisplayMode_t PdqDisplayCycleTheme(void);

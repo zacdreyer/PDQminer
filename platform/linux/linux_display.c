@@ -32,6 +32,13 @@ PdqError_t PdqDisplayOff(void) {
     return PdqOk;
 }
 
+PdqError_t PdqDisplayShowInfo(const char* p_Pool, const char* p_Ip, const char* p_Worker) {
+    (void)p_Pool;
+    (void)p_Ip;
+    (void)p_Worker;
+    return PdqOk;
+}
+
 PdqDisplayMode_t PdqDisplayCycleTheme(void) {
     return PdqDisplayModeHeadless;
 }
