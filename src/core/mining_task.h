@@ -23,8 +23,6 @@ bool       PdqMiningIsRunning(void);
 bool       PdqMiningHasShare(void);
 PdqError_t PdqMiningGetShare(PdqShareInfo_t* p_Share);
 void       PdqMiningClearShares(void);
-void       PdqMiningPause(void);
-void       PdqMiningResume(void);
 
 #ifdef __cplusplus
 }

@@ -64,15 +64,11 @@ void setup() {
     }
 
 #ifndef PDQ_HEADLESS
-    PdqDisplayInit(PdqDisplayModeTrinityPro);
-    PdqDisplayShowMessage("PDQminer", "Initializing...");
+    PdqDisplayInit(PdqDisplayModeHeadless);
 #endif
 
     if (!PdqConfigIsValid()) {
         Serial.println("[PDQminer] No valid config, starting portal...");
-#ifndef PDQ_HEADLESS
-        PdqDisplayShowMessage("PDQminer", "Setup Mode");
-#endif
         PdqWifiInit();
         PdqWifiStartPortal();
         return;
@@ -108,10 +104,6 @@ void setup() {
     PdqWifiGetIp(Ip, sizeof(Ip));
     Serial.printf("[PDQminer] WiFi connected, IP: %s\n", Ip);
     Serial.flush();
-
-#ifndef PDQ_HEADLESS
-    PdqDisplayShowMessage("PDQminer", "Connecting pool...");
-#endif
 
     Serial.printf("[DBG] Connecting to %s:%d\n", s_Config.PrimaryPool.Host, s_Config.PrimaryPool.Port);
     Serial.flush();
@@ -242,21 +234,14 @@ void loop() {
     s_Stats.Templates = s_TemplateCount;
     s_Stats.WifiConnected = PdqWifiIsConnected();
 
-#ifndef PDQ_HEADLESS
-    static uint32_t s_LastDisplayUpdate = 0;
-    if (millis() - s_LastDisplayUpdate > 2000) {
-        PdqMiningPause();
-        PdqDisplayUpdate(&s_Stats);
-        PdqMiningResume();
-        s_LastDisplayUpdate = millis();
-    }
-#endif
-
     static uint32_t s_LastSerialUpdate = 0;
     if (millis() - s_LastSerialUpdate > 10000) {
-        Serial.printf("[PDQminer] Hashrate: %lu KH/s (HW: %lu, SW: %lu) | Shares: %lu | Blocks: %lu\n",
+        Serial.printf("[PDQminer] %lu KH/s (HW:%lu SW:%lu) | %.0fC | Shares:%lu Rej:%lu | Diff:%.1f | Tmpl:%lu | Up:%lus\n",
                       s_Stats.HashRate / 1000, s_Stats.HashRateHw / 1000, s_Stats.HashRateSw / 1000,
-                      s_Stats.SharesAccepted, s_Stats.BlocksFound);
+                      s_Stats.Temperature,
+                      s_Stats.SharesAccepted, s_Stats.SharesRejected,
+                      s_Stats.Difficulty, (unsigned long)s_Stats.Templates,
+                      (unsigned long)s_Stats.Uptime);
         s_LastSerialUpdate = millis();
     }
 

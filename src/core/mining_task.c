@@ -21,7 +21,7 @@
 #define PDQ_MINING_STACK_SIZE   8192
 #define PDQ_MINING_PRIORITY     5
 #define PDQ_NONCE_BATCH_SIZE_SW 4096
-#define PDQ_NONCE_BATCH_SIZE_HW (64*1024)
+#define PDQ_NONCE_BATCH_SIZE_HW (512*1024)
 #define PDQ_WDT_FEED_INTERVAL   1000
 #else
 #define PDQ_IRAM_ATTR
@@ -50,8 +50,6 @@ typedef struct {
     volatile uint32_t       SharesAccepted;
     volatile uint32_t       SharesRejected;
     volatile uint32_t       BlocksFound;
-    volatile bool           PauseRequested;
-    volatile uint8_t        PausedCount;
     uint32_t                StartTime;
     PdqMiningJob_t          CurrentJob;
     uint32_t                CurrentNonce;
@@ -159,22 +157,6 @@ PDQ_IRAM_ATTR static void MiningTaskCore1(void* p_Param) {
                 LastWdtFeed = Now;
             }
 
-            /* Pause support for display updates */
-            if (s_State.PauseRequested) {
-                if (LocalHashes > 0) {
-                    __atomic_fetch_add(&s_State.TotalHashes, LocalHashes, __ATOMIC_RELAXED);
-                    __atomic_fetch_add(&s_State.TotalHashesSw, LocalHashes, __ATOMIC_RELAXED);
-                    LocalHashes = 0;
-                    LastHashReport = xTaskGetTickCount() * portTICK_PERIOD_MS;
-                }
-                __atomic_fetch_add(&s_State.PausedCount, 1, __ATOMIC_SEQ_CST);
-                while (s_State.PauseRequested) {
-                    esp_task_wdt_reset();
-                    vTaskDelay(pdMS_TO_TICKS(5));
-                }
-                __atomic_fetch_sub(&s_State.PausedCount, 1, __ATOMIC_SEQ_CST);
-            }
-
             if (Now - LastHashReport > 1000) {
                 __atomic_fetch_add(&s_State.TotalHashes, LocalHashes, __ATOMIC_RELAXED);
                 __atomic_fetch_add(&s_State.TotalHashesSw, LocalHashes, __ATOMIC_RELAXED);
@@ -235,27 +217,9 @@ PDQ_IRAM_ATTR static void MiningTaskHw(void* p_Param) {
             }
 
             /* HW task must yield after every batch to prevent IDLE task WDT.
-             * Each 64K batch takes ~108ms at 607 KH/s. */
+             * Each 512K batch takes ~868ms at 607 KH/s. */
             esp_task_wdt_reset();
             vTaskDelay(1);
-
-            /* Pause support: SHA engine saturates APB bus, starving SPI.
-             * Display updates request a pause between batches. */
-            if (s_State.PauseRequested) {
-                /* Flush accumulated hashes before pausing */
-                if (LocalHashes > 0) {
-                    __atomic_fetch_add(&s_State.TotalHashes, LocalHashes, __ATOMIC_RELAXED);
-                    __atomic_fetch_add(&s_State.TotalHashesHw, LocalHashes, __ATOMIC_RELAXED);
-                    LocalHashes = 0;
-                    LastHashReport = xTaskGetTickCount() * portTICK_PERIOD_MS;
-                }
-                __atomic_fetch_add(&s_State.PausedCount, 1, __ATOMIC_SEQ_CST);
-                while (s_State.PauseRequested) {
-                    esp_task_wdt_reset();
-                    vTaskDelay(pdMS_TO_TICKS(5));
-                }
-                __atomic_fetch_sub(&s_State.PausedCount, 1, __ATOMIC_SEQ_CST);
-            }
 
             uint32_t Now = xTaskGetTickCount() * portTICK_PERIOD_MS;
             if (Now - LastHashReport > 1000) {
@@ -338,26 +302,6 @@ PdqError_t PdqMiningStop(void) {
     vTaskDelay(pdMS_TO_TICKS(100));
 #endif
     return PdqOk;
-}
-
-void PdqMiningPause(void) {
-#if PDQ_USE_RTOS
-    if (!s_State.Running) return;
-    s_State.PauseRequested = true;
-    /* Wait for both mining tasks to acknowledge the pause.
-     * HW batch is max ~108ms (64K nonces), SW batch is ~1ms. */
-    uint32_t Timeout = 200;
-    while (s_State.PausedCount < 2 && Timeout > 0) {
-        vTaskDelay(pdMS_TO_TICKS(5));
-        Timeout -= 5;
-    }
-#endif
-}
-
-void PdqMiningResume(void) {
-#if PDQ_USE_RTOS
-    s_State.PauseRequested = false;
-#endif
 }
 
 PdqError_t PdqMiningSetJob(const PdqMiningJob_t* p_Job) {
