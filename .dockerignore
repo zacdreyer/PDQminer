@@ -1,0 +1,12 @@
+.git
+.pio
+.vscode
+tools
+docs
+boards
+test
+platform/linux/build
+platform/linux/.venv
+*.md
+LICENSE
+serial_monitor.py

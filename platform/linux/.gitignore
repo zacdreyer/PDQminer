@@ -1,0 +1,3 @@
+platform/linux/build/
+*.o
+*.d

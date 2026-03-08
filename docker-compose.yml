@@ -1,0 +1,20 @@
+services:
+  pdqminer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pdqminer
+    restart: unless-stopped
+    environment:
+      - PDQ_POOL_HOST=${PDQ_POOL_HOST:-pool.nerdminers.org}
+      - PDQ_POOL_PORT=${PDQ_POOL_PORT:-3333}
+      - PDQ_WALLET=${PDQ_WALLET:?Set PDQ_WALLET to your Bitcoin address}
+      - PDQ_WORKER=${PDQ_WORKER:-docker01}
+      - PDQ_THREADS=${PDQ_THREADS:-2}
+      - PDQ_DIFFICULTY=${PDQ_DIFFICULTY:-1.0}
+    # Limit resources to avoid runaway CPU usage
+    deploy:
+      resources:
+        limits:
+          cpus: "${PDQ_CPU_LIMIT:-2.0}"
+          memory: 128M
