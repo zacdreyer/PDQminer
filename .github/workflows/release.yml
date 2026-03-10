@@ -93,9 +93,39 @@ jobs:
           name: pdqmanager-dist
           path: tools/pdqmanager/dist/
 
+  build-firmware:
+    name: Build ESP32 Firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Build firmware for all targets
+        run: |
+          pio run -e cyd_ili9341
+          pio run -e cyd_st7789
+          pio run -e cyd_ili9341_headless
+          pio run -e esp32_headless
+      - name: Collect firmware binaries
+        run: |
+          mkdir -p dist/firmware
+          cp .pio/build/cyd_ili9341/firmware.bin dist/firmware/pdqminer-cyd-ili9341.bin
+          cp .pio/build/cyd_st7789/firmware.bin dist/firmware/pdqminer-cyd-st7789.bin
+          cp .pio/build/cyd_ili9341_headless/firmware.bin dist/firmware/pdqminer-cyd-ili9341-headless.bin
+          cp .pio/build/esp32_headless/firmware.bin dist/firmware/pdqminer-esp32-headless.bin
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware-dist
+          path: dist/firmware/
+
   release:
     name: Create GitHub Release
-    needs: [build-pdqflasher, build-pdqmanager]
+    needs: [build-pdqflasher, build-pdqmanager, build-firmware]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -112,6 +142,12 @@ jobs:
           name: pdqmanager-dist
           path: dist/pdqmanager/
 
+      - name: Download firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: firmware-dist
+          path: dist/firmware/
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -119,3 +155,4 @@ jobs:
           files: |
             dist/pdqflasher/*
             dist/pdqmanager/*
+            dist/firmware/*
